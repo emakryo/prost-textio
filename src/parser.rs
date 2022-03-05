@@ -1,6 +1,4 @@
-use std::{
-    borrow::Cow, cell::RefCell, collections::HashMap, io::Read, rc::Rc,
-};
+use std::{borrow::Cow, cell::RefCell, collections::HashMap, io::Read, rc::Rc};
 
 use prost::{bytes::Bytes, Message};
 use prost_reflect::{
@@ -3173,7 +3171,7 @@ repeated_nested_message <
                     unknown_field: 12345\n\
                 }\n\
             }";
-        
+
         assert!(!parser.parse_from_str(message_with_ext, &mut proto));
         parser.allow_unknown_field(true);
         assert!(parser.parse_from_str(message_with_ext, &mut proto));
@@ -3197,7 +3195,8 @@ repeated_nested_message <
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(&proto.repeated_uint64, &[1, 2]);
 
-        let mut proto = DynamicMessage::new(protobuf_unittest::TestMessageSetContainer::descriptor());
+        let mut proto =
+            DynamicMessage::new(protobuf_unittest::TestMessageSetContainer::descriptor());
         let text = "\
             1 {\n\
                 1545008 {\n\
@@ -3210,10 +3209,40 @@ repeated_nested_message <
         assert!(parser.parse_from_str(text, &mut proto));
         let message = proto.get_field_by_name("message_set").unwrap();
         let message = message.as_message().unwrap();
-        let ext1 = message.descriptor().get_extension_by_json_name("[protobuf_unittest.TestMessageSetExtension1.message_set_extension]").unwrap();
-        let ext2 = message.descriptor().get_extension_by_json_name("[protobuf_unittest.TestMessageSetExtension2.message_set_extension]").unwrap();
-        assert_eq!(23, message.get_extension(&ext1).as_message().unwrap().get_field_by_name("i").unwrap().as_i32().unwrap());
-        assert_eq!("foo", message.get_extension(&ext2).as_message().unwrap().get_field_by_name("str").unwrap().as_str().unwrap());
+        let ext1 = message
+            .descriptor()
+            .get_extension_by_json_name(
+                "[protobuf_unittest.TestMessageSetExtension1.message_set_extension]",
+            )
+            .unwrap();
+        let ext2 = message
+            .descriptor()
+            .get_extension_by_json_name(
+                "[protobuf_unittest.TestMessageSetExtension2.message_set_extension]",
+            )
+            .unwrap();
+        assert_eq!(
+            23,
+            message
+                .get_extension(&ext1)
+                .as_message()
+                .unwrap()
+                .get_field_by_name("i")
+                .unwrap()
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            "foo",
+            message
+                .get_extension(&ext2)
+                .as_message()
+                .unwrap()
+                .get_field_by_name("str")
+                .unwrap()
+                .as_str()
+                .unwrap()
+        );
 
         let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
         parser.allow_field_number(false);
@@ -3224,6 +3253,4 @@ repeated_nested_message <
         let text = "1234:1\n";
         assert!(!parser.parse_from_str(text, &mut proto));
     }
-
-
 }

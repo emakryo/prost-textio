@@ -1,0 +1,27 @@
+name: CI
+on: push
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+
+      - name: Setup toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v1.3.0
+
+      - name: Rustfmt
+        uses: mbrobbel/rustfmt-check@0.3.0
+
+      - name: Clippy
+        uses: actions-rs/clippy-check@v1
+        args: --tests
+
+      - name: Test
+        run: cargo test
