@@ -74,15 +74,15 @@ pub enum CommentStyle {
 }
 
 enum NextCommentStatus {
-    LineComment,
-    BlockComment,
-    SlashNotComment,
-    NoComment,
+    Line,
+    Block,
+    SlashNot,
+    No,
 }
 
 pub trait ErrorCollector: std::fmt::Debug {
-    fn add_error(&mut self, line: usize, column: usize, message: &str) {}
-    fn add_warning(&mut self, line: usize, column: usize, message: &str) {}
+    fn add_error(&mut self, _line: usize, _column: usize, _message: &str) {}
+    fn add_warning(&mut self, _line: usize, _column: usize, _message: &str) {}
 }
 
 impl ErrorCollector for () {}
@@ -116,7 +116,7 @@ impl<R: Read> Tokenizer<R> {
         let default_buffer_size = 8192;
         let mut this = Self {
             reader,
-            error_collector: error_collector,
+            error_collector,
             buffer: vec![0; default_buffer_size],
             buffer_size: 0,
             buffer_pos: 0,
@@ -153,6 +153,7 @@ impl<R: Read> Tokenizer<R> {
         self.report_newlines &= report;
     }
 
+    #[cfg(test)]
     pub fn set_report_newlines(&mut self, report: bool) {
         self.report_newlines = report;
         self.report_newlines |= report;
@@ -245,7 +246,7 @@ impl<R: Read> Tokenizer<R> {
         self.record_target.clear();
         self.record_start = None;
 
-        return ret;
+        ret
     }
 
     fn start_token(&mut self) {
@@ -299,7 +300,7 @@ impl<R: Read> Tokenizer<R> {
 
     fn consume_one_or_more<C: CharacterClass>(&mut self, error: &str) {
         if !C::is_in_class(self.current_char) {
-            self.add_error(error.into());
+            self.add_error(error);
         } else {
             loop {
                 self.next_char();
@@ -314,12 +315,12 @@ impl<R: Read> Tokenizer<R> {
         loop {
             match self.current_char {
                 0 => {
-                    self.add_error("Unexpected EoS".into());
+                    self.add_error("Unexpected EoS");
                     return;
                 }
                 b'\n' => {
                     if !self.allow_multiline_strings {
-                        self.add_error("String literals cannot cross line boundaries.".into());
+                        self.add_error("String literals cannot cross line boundaries.");
                         return;
                     }
                     self.next_char();
@@ -327,34 +328,32 @@ impl<R: Read> Tokenizer<R> {
                 b'\\' => {
                     // an escape sequence
                     self.next_char();
-                    if self.try_consume_one::<Escape>() {
-                        // valid escape sequence
-                    } else if self.try_consume_one::<OctalDigit>() {
+                    if self.try_consume_one::<Escape>() || self.try_consume_one::<OctalDigit>() {
+                        // Valid escape sequence or
                         // Possibly followed by two more octal digits, but these will
                         // just be consumed by the main loop anyway so we don't need
                         // to do so explicitly here.
                     } else if self.try_consume(b'x') {
                         if !self.try_consume_one::<HexDegit>() {
-                            self.add_error("Expected hex digits for escape sequence.".into());
+                            self.add_error("Expected hex digits for escape sequence.");
                         }
                         // Possibly followed by another hex digit, but again we don't care.
                     } else if self.try_consume(b'u') {
                         if !self.try_consume_some::<HexDegit>(4) {
-                            self.add_error("Expected hex digits for \\u excape sequence.".into());
+                            self.add_error("Expected hex digits for \\u excape sequence.");
                         }
                     } else if self.try_consume(b'U') {
                         if !self.try_consume(b'0')
                             || !self.try_consume(b'0')
-                            || !(self.try_consume(b'1') || !self.try_consume(b'0'))
                             || !self.try_consume_some::<HexDegit>(5)
+                            || !self.try_consume(b'1') && self.try_consume(b'0')
                         {
                             self.add_error(
-                                "Expected eight hex digits up to 10ffff for \\U escape sequence."
-                                    .into(),
+                                "Expected eight hex digits up to 10ffff for \\U escape sequence.",
                             );
                         }
                     } else {
-                        self.add_error("Invalid escape sequence in string literal.".into());
+                        self.add_error("Invalid escape sequence in string literal.");
                     }
                 }
                 _ => {
@@ -479,21 +478,21 @@ impl<R: Read> Tokenizer<R> {
     fn try_consume_comment_start(&mut self) -> NextCommentStatus {
         if self.comment_style == CommentStyle::CppCommentStyle && self.try_consume(b'/') {
             if self.try_consume(b'/') {
-                return NextCommentStatus::LineComment;
+                NextCommentStatus::Line
             } else if self.try_consume(b'*') {
-                return NextCommentStatus::BlockComment;
+                NextCommentStatus::Block
             } else {
                 self.current.type_ = TokenType::Symbol;
                 self.current.text = b"/".to_vec();
                 self.current.line = self.line;
                 self.current.column = self.column - 1;
                 self.current.end_column = self.column;
-                return NextCommentStatus::SlashNotComment;
+                NextCommentStatus::SlashNot
             }
         } else if self.comment_style == CommentStyle::ShellCommentStyle && self.try_consume(b'#') {
-            return NextCommentStatus::LineComment;
+            NextCommentStatus::Line
         } else {
-            return NextCommentStatus::NoComment;
+            NextCommentStatus::No
         }
     }
 
@@ -524,7 +523,7 @@ impl<R: Read> Tokenizer<R> {
             self.current.type_ = TokenType::NewLine;
             return true;
         }
-        return false;
+        false
     }
 
     pub fn next(&mut self) -> bool {
@@ -538,18 +537,18 @@ impl<R: Read> Tokenizer<R> {
             }
 
             match self.try_consume_comment_start() {
-                NextCommentStatus::LineComment => {
+                NextCommentStatus::Line => {
                     self.consume_line_comment();
                     continue;
                 }
-                NextCommentStatus::BlockComment => {
+                NextCommentStatus::Block => {
                     self.consume_block_comment();
                     continue;
                 }
-                NextCommentStatus::SlashNotComment => {
+                NextCommentStatus::SlashNot => {
                     return true;
                 }
-                NextCommentStatus::NoComment => {}
+                NextCommentStatus::No => {}
             };
 
             if self.read_error {
@@ -581,7 +580,7 @@ impl<R: Read> Tokenizer<R> {
                             self.error_collector.borrow_mut().add_error(
                                 self.line,
                                 self.column - 2,
-                                "Need space between identifier and decimal point.".into(),
+                                "Need space between identifier and decimal point.",
                             )
                         }
                         self.consume_number(false, true)
@@ -618,7 +617,7 @@ impl<R: Read> Tokenizer<R> {
         self.current.line = self.line;
         self.current.column = self.column;
         self.current.end_column = self.column;
-        return false;
+        false
     }
 
     pub fn current(&self) -> &Token {
@@ -642,9 +641,10 @@ fn digit_value(c: u8) -> u32 {
     }
     panic!()
 }
+
 pub fn parse_string_append(text: &[u8], output: &mut String) {
     // TODO: support utf8 input?
-    if text.len() == 0 {
+    if text.is_empty() {
         panic!("parse_string_append() passed text tha could not have benn tokenized as a string");
     }
 
@@ -755,7 +755,7 @@ fn assemble_utf16(head_surrogate: u32, trail_surrogate: u32) -> u32 {
     assert!(is_head_surrogate(head_surrogate));
     assert!(is_trail_surrogate(trail_surrogate));
     0x10000
-        + (((head_surrogate - MIN_HEAD_SURROGATE) << 10) | trail_surrogate - MIN_TRAIL_SURROGATE)
+        + (((head_surrogate - MIN_HEAD_SURROGATE) << 10) | (trail_surrogate - MIN_TRAIL_SURROGATE))
 }
 
 /// Returns unicode code point and length of escaped sequence of text
@@ -865,7 +865,7 @@ mod tests {
     }
 
     impl ErrorCollector for TestErrorCollecter {
-        fn add_error(&mut self, line: usize, column: usize, message: &str) {
+        fn add_error(&mut self, _line: usize, _column: usize, message: &str) {
             self.errors.push(message.to_string());
         }
     }

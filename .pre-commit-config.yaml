@@ -9,7 +9,7 @@ repos:
   - id: check-yaml
   - id: check-added-large-files
 - repo: https://github.com/rhysd/actionlint
-  rev: main
+  rev: v1.6.9
   hooks:
   - id: actionlint
 - repo: https://github.com/doublify/pre-commit-rust
@@ -17,4 +17,6 @@ repos:
   hooks:
   - id: fmt
   - id: cargo-check
+    args: ['--tests']
   - id: clippy
+    args: ['--tests', '--', '-D', 'warnings']

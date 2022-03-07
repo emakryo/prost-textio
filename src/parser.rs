@@ -7,13 +7,12 @@ use prost_reflect::{
 };
 use prost_types::FieldDescriptorProto;
 
-use crate::tokenizer::parse_integer;
-
-use super::{
-    tokenizer::{parse_string_append, ErrorCollector, TokenType, Tokenizer},
+use crate::{
+    tokenizer::{parse_integer, parse_string_append, ErrorCollector, TokenType, Tokenizer},
     ProtoError, Result,
 };
 
+#[derive(Clone)]
 pub struct Parser {
     opts: ParserOpts,
     error_collector: Rc<RefCell<dyn ErrorCollector>>,
@@ -21,14 +20,20 @@ pub struct Parser {
     parse_info_tree: Option<Rc<RefCell<ParseInfoTree>>>,
 }
 
-impl Parser {
-    pub fn new() -> Self {
+impl Default for Parser {
+    fn default() -> Self {
         Self {
             opts: ParserOpts::default(),
             error_collector: Rc::new(RefCell::new(())),
             finder: Finder::new(),
             parse_info_tree: None,
         }
+    }
+}
+
+impl Parser {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn parse<R: Read>(&self, reader: R, output: &mut DynamicMessage) -> bool {
@@ -39,8 +44,7 @@ impl Parser {
             self.finder.clone(),
             self.parse_info_tree.clone(),
             self.opts.clone(),
-        )
-        .unwrap();
+        );
 
         self.merge_using_impl(output, &mut parser)
     }
@@ -82,8 +86,7 @@ impl Parser {
             self.finder.clone(),
             self.parse_info_tree.clone(),
             opts,
-        )
-        .unwrap();
+        );
 
         self.merge_using_impl(output, &mut parser)
     }
@@ -112,8 +115,7 @@ impl Parser {
             self.finder.clone(),
             self.parse_info_tree.clone(),
             self.opts.clone(),
-        )
-        .unwrap();
+        );
 
         parser.parse_field(field, message).is_ok()
     }
@@ -161,16 +163,14 @@ enum SingularOverwritePolicy {
     Forbid,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Finder {
     descriptors: Vec<FileDescriptor>,
 }
 
 impl Finder {
     pub fn new() -> Self {
-        Self {
-            descriptors: vec![],
-        }
+        Self::default()
     }
 
     pub fn from_descriptors(file_descriptor: &[&FileDescriptor]) -> Self {
@@ -284,16 +284,33 @@ impl ParseInfoTree {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseLocation {
     pub line: usize,
     pub column: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseLocationRange {
     pub start: ParseLocation,
     pub end: ParseLocation,
+}
+
+impl From<(usize, usize, usize, usize)> for ParseLocationRange {
+    fn from(
+        (start_line, start_column, end_line, end_column): (usize, usize, usize, usize),
+    ) -> Self {
+        Self {
+            start: ParseLocation {
+                line: start_line,
+                column: start_column,
+            },
+            end: ParseLocation {
+                line: end_line,
+                column: end_column,
+            },
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -439,7 +456,7 @@ impl<'a, R: Read> ParserImpl<R> {
         finder: Finder,
         parse_info_tree: Option<Rc<RefCell<ParseInfoTree>>>,
         opts: ParserOpts,
-    ) -> Result<Self> {
+    ) -> Self {
         let mut tokenizer = Tokenizer::new(reader, Rc::clone(&error_collector));
         tokenizer.set_allow_f_after_float(true);
         tokenizer.set_comment_style(super::tokenizer::CommentStyle::ShellCommentStyle);
@@ -450,7 +467,7 @@ impl<'a, R: Read> ParserImpl<R> {
         }
         tokenizer.next();
         let init_recursion_limit = opts.recursion_limit;
-        Ok(Self {
+        Self {
             error_collector,
             finder,
             parse_info_tree,
@@ -458,7 +475,7 @@ impl<'a, R: Read> ParserImpl<R> {
             tokenizer,
             had_errors: false,
             init_recursion_limit,
-        })
+        }
     }
 
     fn parse(&mut self, message: &mut DynamicMessage) -> Result<()> {
@@ -560,7 +577,7 @@ impl<'a, R: Read> ParserImpl<R> {
             if self.try_consume("[").is_ok() {
                 let (full_type_name, prefix) = self.consume_any_type_url()?;
                 let mut prefix_and_full_type_name: String = prefix.clone();
-                prefix_and_full_type_name.extend(full_type_name.chars());
+                prefix_and_full_type_name.push_str(&full_type_name);
                 self.consume_before_whitespace("]")?;
                 self.try_consume_whitespace(&prefix_and_full_type_name, "Any")
                     .ok();
@@ -575,13 +592,12 @@ impl<'a, R: Read> ParserImpl<R> {
 
                 let serialized_value = self.consume_any_value(&value_descriptor)?;
 
-                if self.opts.singular_overwrite_policy == SingularOverwritePolicy::Forbid {
-                    if (!any_type_url_field.is_list() && message.has_field(&any_type_url_field))
-                        || (!any_value_field.is_list() && message.has_field(&any_value_field))
-                    {
-                        self.report_error("Non repeated Any specified multiple times");
-                        return Err(ProtoError::Todo("Duplicated Any".into()));
-                    }
+                if self.opts.singular_overwrite_policy == SingularOverwritePolicy::Forbid
+                    && ((!any_type_url_field.is_list() && message.has_field(&any_type_url_field))
+                        || (!any_value_field.is_list() && message.has_field(&any_value_field)))
+                {
+                    self.report_error("Non repeated Any specified multiple times");
+                    return Err(ProtoError::Todo("Duplicated Any".into()));
                 }
 
                 message.set_field(
@@ -811,7 +827,7 @@ impl<'a, R: Read> ParserImpl<R> {
             );
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn skip_field(&mut self) -> Result<()> {
@@ -860,7 +876,7 @@ impl<'a, R: Read> ParserImpl<R> {
             let list = field
                 .mut_value_of(message)
                 .as_list_mut()
-                .ok_or(ProtoError::Todo("".into()))?;
+                .ok_or_else(|| ProtoError::Todo("".into()))?;
             if let Kind::Message(m) = field.kind() {
                 list.push(Value::Message(DynamicMessage::new(m)));
             } else {
@@ -1312,7 +1328,7 @@ impl<'a, R: Read> ParserImpl<R> {
     }
 
     fn try_consume(&mut self, value: &str) -> Result<()> {
-        if &self.tokenizer.current().text == value.as_bytes() {
+        if self.tokenizer.current().text == value.as_bytes() {
             self.tokenizer.next();
             Ok(())
         } else {
@@ -1523,7 +1539,7 @@ impl ReflectMessageExt for DynamicMessage {
             if let Some(message) = field.kind().as_message() {
                 if message.is_map_entry() {
                     let value_field = message.map_entry_value_field();
-                    if let Some(_) = value_field.kind().as_message() {
+                    if value_field.kind().as_message().is_some() {
                         todo!();
                     }
                 } else if field.is_list() {
@@ -1576,15 +1592,9 @@ impl ReflectMessageExt for DynamicMessage {
                 ret.push(format!("{}{}", prefix, field.name()));
             }
 
-            if let Some(_) = field.kind().as_message() {
+            if field.kind().as_message().is_some() {
                 if field.is_list() {
-                    for (j, value) in self
-                        .get_field(&field)
-                        .as_list()
-                        .unwrap()
-                        .into_iter()
-                        .enumerate()
-                    {
+                    for (j, value) in self.get_field(&field).as_list().unwrap().iter().enumerate() {
                         let sub_message = value.as_message().unwrap();
                         ret.extend(
                             sub_message
@@ -1634,8 +1644,7 @@ impl DescriptorExt for MessageDescriptor {
 
     fn is_reserved_name(&self, name: &str) -> bool {
         self.reserved_names()
-            .find(|reserved_name| name == *reserved_name)
-            .is_some()
+            .any(|reserved_name| name == reserved_name)
     }
 
     fn is_reserverd_field(&self, field_number: u32) -> bool {
@@ -1675,16 +1684,16 @@ trait FileDescriptorExt {
 impl FileDescriptorExt for FileDescriptor {
     fn get_extension_by_printable_name(
         &self,
-        descriptor: &MessageDescriptor,
-        name: &str,
+        _descriptor: &MessageDescriptor,
+        _name: &str,
     ) -> Option<FieldDescriptor> {
         todo!()
     }
 
     fn get_extension_by_number(
         &self,
-        descriptor: &MessageDescriptor,
-        number: u32,
+        _descriptor: &MessageDescriptor,
+        _number: u32,
     ) -> Option<FieldDescriptor> {
         todo!()
     }
@@ -1711,7 +1720,7 @@ fn is_hex_number(text: &str) -> bool {
 }
 
 fn is_oct_number(text: &str) -> bool {
-    text.starts_with("0") && (text.chars().nth(1).map(|x| ('0'..'8').contains(&x))).unwrap_or(false)
+    text.starts_with('0') && (text.chars().nth(1).map(|x| ('0'..'8').contains(&x))).unwrap_or(false)
 }
 
 trait FieldDescriptorExt {
@@ -1755,10 +1764,12 @@ mod tests {
         };
     }
 
+    #[allow(clippy::all)]
     mod protobuf_unittest_import {
         include!(concat!(env!("OUT_DIR"), "/protobuf_unittest_import.rs"));
     }
 
+    #[allow(clippy::all)]
     mod protobuf_unittest {
         include!(concat!(env!("OUT_DIR"), "/protobuf_unittest.rs"));
         descriptor!(
@@ -1803,10 +1814,12 @@ mod tests {
         );
     }
 
+    #[allow(clippy::all)]
     mod proto2_wireformat_unittest {
         include!(concat!(env!("OUT_DIR"), "/proto2_wireformat_unittest.rs"));
     }
 
+    #[allow(clippy::all)]
     mod proto3_unittest {
         include!(concat!(env!("OUT_DIR"), "/proto3_unittest.rs"));
         descriptor!(
@@ -1858,23 +1871,16 @@ mod tests {
         d: &MessageDescriptor,
         field_name: &str,
         index: usize,
-        start_line: usize,
-        start_column: usize,
-        end_line: usize,
-        end_column: usize,
+        expected_range: ParseLocationRange,
     ) {
         let range = tree
             .get_location_range(&d.get_field_by_name(field_name).unwrap(), index)
             .unwrap();
-        assert_eq!(start_line, range.start.line);
-        assert_eq!(start_column, range.start.column);
-        assert_eq!(end_line, range.end.line);
-        assert_eq!(end_column, range.end.column);
+        assert_eq!(&expected_range, range);
         let start_location = tree
             .get_location(&d.get_field_by_name(field_name).unwrap(), index)
             .unwrap();
-        assert_eq!(start_line, start_location.line);
-        assert_eq!(start_column, start_location.column);
+        assert_eq!(&expected_range.start, start_location);
     }
 
     fn expect_location_not_found(
@@ -1923,13 +1929,716 @@ mod tests {
         );
     }
 
-    fn assert_all_fields_set(proto: &DynamicMessage) {
-        dbg!(proto.transcode_to::<protobuf_unittest::TestAllTypes>());
+    #[allow(clippy::bool_assert_comparison)]
+    fn assert_all_fields_set(message: &DynamicMessage) {
+        let message = message.transcode_to::<TestAllTypes>().unwrap();
+
+        assert_eq!(101, message.optional_int32());
+        assert_eq!(102, message.optional_int64());
+        assert_eq!(103, message.optional_uint32());
+        assert_eq!(104, message.optional_uint64());
+        assert_eq!(105, message.optional_sint32());
+        assert_eq!(106, message.optional_sint64());
+        assert_eq!(107, message.optional_fixed32());
+        assert_eq!(108, message.optional_fixed64());
+        assert_eq!(109, message.optional_sfixed32());
+        assert_eq!(110, message.optional_sfixed64());
+        assert_eq!(111.0, message.optional_float());
+        assert_eq!(112.0, message.optional_double());
+        assert_eq!(true, message.optional_bool());
+        assert_eq!("115", message.optional_string());
+        assert_eq!(b"116", message.optional_bytes());
+
+        assert_eq!(117, message.optionalgroup.as_ref().unwrap().a());
+        assert_eq!(118, message.optional_nested_message.as_ref().unwrap().bb());
+        assert_eq!(119, message.optional_foreign_message.as_ref().unwrap().c());
+        assert_eq!(120, message.optional_import_message.as_ref().unwrap().d());
+        assert_eq!(
+            126,
+            message.optional_public_import_message.as_ref().unwrap().e()
+        );
+        assert_eq!(127, message.optional_lazy_message.as_ref().unwrap().bb());
+
+        assert_eq!(
+            protobuf_unittest::test_all_types::NestedEnum::Baz,
+            message.optional_nested_enum()
+        );
+        assert_eq!(
+            protobuf_unittest::ForeignEnum::ForeignBaz,
+            message.optional_foreign_enum()
+        );
+        assert_eq!(
+            protobuf_unittest_import::ImportEnum::ImportBaz,
+            message.optional_import_enum()
+        );
+
+        assert_eq!([201, 301].as_ref(), &message.repeated_int32);
+        assert_eq!([202, 302].as_ref(), &message.repeated_int64);
+        assert_eq!([203, 303].as_ref(), &message.repeated_uint32);
+        assert_eq!([204, 304].as_ref(), &message.repeated_uint64);
+        assert_eq!([205, 305].as_ref(), &message.repeated_sint32);
+        assert_eq!([206, 306].as_ref(), &message.repeated_sint64);
+        assert_eq!([207, 307].as_ref(), &message.repeated_fixed32);
+        assert_eq!([208, 308].as_ref(), &message.repeated_fixed64);
+        assert_eq!([209, 309].as_ref(), &message.repeated_sfixed32);
+        assert_eq!([210, 310].as_ref(), &message.repeated_sfixed64);
+        assert_eq!([211.0, 311.0].as_ref(), &message.repeated_float);
+        assert_eq!([212.0, 312.0].as_ref(), &message.repeated_double);
+        assert_eq!([true, false].as_ref(), &message.repeated_bool);
+        assert_eq!(["215", "315"].as_ref(), &message.repeated_string);
+        assert_eq!(
+            [b"216".to_vec(), b"316".to_vec()].as_ref(),
+            &message.repeated_bytes
+        );
+        assert_eq!(217, message.repeatedgroup[0].a());
+        assert_eq!(317, message.repeatedgroup[1].a());
+        assert_eq!(218, message.repeated_nested_message[0].bb());
+        assert_eq!(318, message.repeated_nested_message[1].bb());
+        assert_eq!(219, message.repeated_foreign_message[0].c());
+        assert_eq!(319, message.repeated_foreign_message[1].c());
+        assert_eq!(220, message.repeated_import_message[0].d());
+        assert_eq!(320, message.repeated_import_message[1].d());
+        assert_eq!(227, message.repeated_lazy_message[0].bb());
+        assert_eq!(327, message.repeated_lazy_message[1].bb());
+
+        assert_eq!(
+            protobuf_unittest::test_all_types::NestedEnum::Bar,
+            message.repeated_nested_enum().next().unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest::test_all_types::NestedEnum::Baz,
+            message.repeated_nested_enum().nth(1).unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest::ForeignEnum::ForeignBar,
+            message.repeated_foreign_enum().next().unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest::ForeignEnum::ForeignBaz,
+            message.repeated_foreign_enum().nth(1).unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest_import::ImportEnum::ImportBar,
+            message.repeated_import_enum().next().unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest_import::ImportEnum::ImportBaz,
+            message.repeated_import_enum().nth(1).unwrap()
+        );
+
+        assert_eq!(401, message.default_int32());
+        assert_eq!(402, message.default_int64());
+        assert_eq!(403, message.default_uint32());
+        assert_eq!(404, message.default_uint64());
+        assert_eq!(405, message.default_sint32());
+        assert_eq!(406, message.default_sint64());
+        assert_eq!(407, message.default_fixed32());
+        assert_eq!(408, message.default_fixed64());
+        assert_eq!(409, message.default_sfixed32());
+        assert_eq!(410, message.default_sfixed64());
+        assert_eq!(411.0, message.default_float());
+        assert_eq!(412.0, message.default_double());
+        assert_eq!(false, message.default_bool());
+        assert_eq!("415", message.default_string());
+        assert_eq!(b"416", message.default_bytes());
+
+        assert_eq!(
+            protobuf_unittest::test_all_types::NestedEnum::Foo,
+            message.default_nested_enum()
+        );
+        assert_eq!(
+            protobuf_unittest::ForeignEnum::ForeignFoo,
+            message.default_foreign_enum()
+        );
+        assert_eq!(
+            protobuf_unittest_import::ImportEnum::ImportFoo,
+            message.default_import_enum()
+        );
+
+        assert_eq!(
+            protobuf_unittest::test_all_types::OneofField::OneofBytes(b"604".to_vec()),
+            message.oneof_field.unwrap()
+        );
     }
 
-    fn assert_all_extensions_set(proto: &DynamicMessage) {
-        dbg!(proto);
-        // dbg!(proto.transcode_to::<protobuf_unittest::TestAllExtensions>());
+    #[allow(clippy::bool_assert_comparison)]
+    fn assert_all_extensions_set(message: &DynamicMessage) {
+        macro_rules! ext {
+            ($extension_name:ident) => {{
+                let desc = message.descriptor();
+                desc.get_extension_by_json_name(concat!(
+                    "[protobuf_unittest.",
+                    stringify!($extension_name),
+                    "]"
+                ))
+                .as_ref()
+                .unwrap()
+            }};
+        }
+        assert!(message.has_extension(ext!(optional_int32_extension)));
+        assert!(message.has_extension(ext!(optional_int64_extension)));
+        assert!(message.has_extension(ext!(optional_uint32_extension)));
+        assert!(message.has_extension(ext!(optional_uint64_extension)));
+        assert!(message.has_extension(ext!(optional_sint32_extension)));
+        assert!(message.has_extension(ext!(optional_sint64_extension)));
+        assert!(message.has_extension(ext!(optional_fixed32_extension)));
+        assert!(message.has_extension(ext!(optional_fixed64_extension)));
+        assert!(message.has_extension(ext!(optional_sfixed32_extension)));
+        assert!(message.has_extension(ext!(optional_sfixed64_extension)));
+        assert!(message.has_extension(ext!(optional_float_extension)));
+        assert!(message.has_extension(ext!(optional_double_extension)));
+        assert!(message.has_extension(ext!(optional_bool_extension)));
+        assert!(message.has_extension(ext!(optional_string_extension)));
+        assert!(message.has_extension(ext!(optional_bytes_extension)));
+        assert!(message.has_extension(ext!(optionalgroup_extension)));
+        assert!(message.has_extension(ext!(optional_nested_message_extension)));
+        assert!(message.has_extension(ext!(optional_foreign_message_extension)));
+        assert!(message.has_extension(ext!(optional_import_message_extension)));
+        assert!(message.has_extension(ext!(optional_public_import_message_extension)));
+        assert!(message.has_extension(ext!(optional_lazy_message_extension)));
+
+        assert!(message
+            .get_extension(ext!(optionalgroup_extension))
+            .as_message()
+            .unwrap()
+            .has_field_by_name("a"));
+        assert!(message
+            .get_extension(ext!(optional_nested_message_extension))
+            .as_message()
+            .unwrap()
+            .has_field_by_name("bb"));
+        assert!(message
+            .get_extension(ext!(optional_foreign_message_extension))
+            .as_message()
+            .unwrap()
+            .has_field_by_name("c"));
+        assert!(message
+            .get_extension(ext!(optional_import_message_extension))
+            .as_message()
+            .unwrap()
+            .has_field_by_name("d"));
+        assert!(message
+            .get_extension(ext!(optional_public_import_message_extension))
+            .as_message()
+            .unwrap()
+            .has_field_by_name("e"));
+        assert!(message
+            .get_extension(ext!(optional_lazy_message_extension))
+            .as_message()
+            .unwrap()
+            .has_field_by_name("bb"));
+
+        assert_eq!(
+            101,
+            message
+                .get_extension(ext!(optional_int32_extension))
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            102,
+            message
+                .get_extension(ext!(optional_int64_extension))
+                .as_i64()
+                .unwrap()
+        );
+        assert_eq!(
+            103,
+            message
+                .get_extension(ext!(optional_uint32_extension))
+                .as_u32()
+                .unwrap()
+        );
+        assert_eq!(
+            104,
+            message
+                .get_extension(ext!(optional_uint64_extension))
+                .as_u64()
+                .unwrap()
+        );
+        assert_eq!(
+            105,
+            message
+                .get_extension(ext!(optional_sint32_extension))
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            106,
+            message
+                .get_extension(ext!(optional_sint64_extension))
+                .as_i64()
+                .unwrap()
+        );
+        assert_eq!(
+            107,
+            message
+                .get_extension(ext!(optional_fixed32_extension))
+                .as_u32()
+                .unwrap()
+        );
+        assert_eq!(
+            108,
+            message
+                .get_extension(ext!(optional_fixed64_extension))
+                .as_u64()
+                .unwrap()
+        );
+        assert_eq!(
+            109,
+            message
+                .get_extension(ext!(optional_sfixed32_extension))
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            110,
+            message
+                .get_extension(ext!(optional_sfixed64_extension))
+                .as_i64()
+                .unwrap()
+        );
+        assert_eq!(
+            111.0,
+            message
+                .get_extension(ext!(optional_float_extension))
+                .as_f32()
+                .unwrap()
+        );
+        assert_eq!(
+            112.0,
+            message
+                .get_extension(ext!(optional_double_extension))
+                .as_f64()
+                .unwrap()
+        );
+        assert_eq!(
+            true,
+            message
+                .get_extension(ext!(optional_bool_extension))
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            "115",
+            message
+                .get_extension(ext!(optional_string_extension))
+                .as_str()
+                .unwrap()
+        );
+        assert_eq!(
+            b"116",
+            message
+                .get_extension(ext!(optional_bytes_extension))
+                .as_bytes()
+                .unwrap()
+                .as_ref()
+        );
+
+        assert_eq!(
+            117,
+            message
+                .get_extension(ext!(optionalgroup_extension))
+                .as_message()
+                .unwrap()
+                .get_field_by_name("a")
+                .unwrap()
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            118,
+            message
+                .get_extension(ext!(optional_nested_message_extension))
+                .as_message()
+                .unwrap()
+                .get_field_by_name("bb")
+                .unwrap()
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            119,
+            message
+                .get_extension(ext!(optional_foreign_message_extension))
+                .as_message()
+                .unwrap()
+                .get_field_by_name("c")
+                .unwrap()
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            120,
+            message
+                .get_extension(ext!(optional_import_message_extension))
+                .as_message()
+                .unwrap()
+                .get_field_by_name("d")
+                .unwrap()
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            126,
+            message
+                .get_extension(ext!(optional_public_import_message_extension))
+                .as_message()
+                .unwrap()
+                .get_field_by_name("e")
+                .unwrap()
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            127,
+            message
+                .get_extension(ext!(optional_lazy_message_extension))
+                .as_message()
+                .unwrap()
+                .get_field_by_name("bb")
+                .unwrap()
+                .as_i32()
+                .unwrap()
+        );
+
+        assert_eq!(
+            protobuf_unittest::test_all_types::NestedEnum::Baz as i32,
+            message
+                .get_extension(ext!(optional_nested_enum_extension))
+                .as_enum_number()
+                .unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest::ForeignEnum::ForeignBaz as i32,
+            message
+                .get_extension(ext!(optional_foreign_enum_extension))
+                .as_enum_number()
+                .unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest_import::ImportEnum::ImportBaz as i32,
+            message
+                .get_extension(ext!(optional_import_enum_extension))
+                .as_enum_number()
+                .unwrap()
+        );
+
+        macro_rules! to_vec {
+            ($ext:ident, $conv:expr) => {{
+                message
+                    .get_extension(ext!($ext))
+                    .as_list()
+                    .unwrap()
+                    .iter()
+                    .map($conv)
+                    .collect::<Vec<_>>()
+            }};
+        }
+
+        assert_eq!(
+            [201, 301].as_ref(),
+            to_vec!(repeated_int32_extension, |x| x.as_i32().unwrap())
+        );
+        assert_eq!(
+            [202, 302].as_ref(),
+            to_vec!(repeated_int64_extension, |x| x.as_i64().unwrap())
+        );
+        assert_eq!(
+            [203, 303].as_ref(),
+            to_vec!(repeated_uint32_extension, |x| x.as_u32().unwrap())
+        );
+        assert_eq!(
+            [204, 304].as_ref(),
+            to_vec!(repeated_uint64_extension, |x| x.as_u64().unwrap())
+        );
+        assert_eq!(
+            [205, 305].as_ref(),
+            to_vec!(repeated_sint32_extension, |x| x.as_i32().unwrap())
+        );
+        assert_eq!(
+            [206, 306].as_ref(),
+            to_vec!(repeated_sint64_extension, |x| x.as_i64().unwrap())
+        );
+        assert_eq!(
+            [207, 307].as_ref(),
+            to_vec!(repeated_fixed32_extension, |x| x.as_u32().unwrap())
+        );
+        assert_eq!(
+            [208, 308].as_ref(),
+            to_vec!(repeated_fixed64_extension, |x| x.as_u64().unwrap())
+        );
+        assert_eq!(
+            [209, 309].as_ref(),
+            to_vec!(repeated_sfixed32_extension, |x| x.as_i32().unwrap())
+        );
+        assert_eq!(
+            [210, 310].as_ref(),
+            to_vec!(repeated_sfixed64_extension, |x| x.as_i64().unwrap())
+        );
+        assert_eq!(
+            [211.0, 311.0].as_ref(),
+            to_vec!(repeated_float_extension, |x| x.as_f32().unwrap())
+        );
+        assert_eq!(
+            [212.0, 312.0].as_ref(),
+            to_vec!(repeated_double_extension, |x| x.as_f64().unwrap())
+        );
+        assert_eq!(
+            [true, false].as_ref(),
+            to_vec!(repeated_bool_extension, |x| x.as_bool().unwrap())
+        );
+        assert_eq!(
+            [String::from("215"), String::from("315")].as_ref(),
+            to_vec!(repeated_string_extension, |x| x.as_str().unwrap())
+        );
+        assert_eq!(
+            [bytes::Bytes::from(b"216".as_ref()), b"316".as_ref().into()].as_ref(),
+            to_vec!(repeated_bytes_extension, |x| x.as_bytes().unwrap())
+        );
+
+        assert_eq!(
+            [217, 317].as_ref(),
+            to_vec!(repeatedgroup_extension, |x| x
+                .as_message()
+                .unwrap()
+                .get_field_by_name("a")
+                .unwrap()
+                .as_i32()
+                .unwrap())
+        );
+        assert_eq!(
+            [218, 318].as_ref(),
+            to_vec!(repeated_nested_message_extension, |x| x
+                .as_message()
+                .unwrap()
+                .get_field_by_name("bb")
+                .unwrap()
+                .as_i32()
+                .unwrap())
+        );
+        assert_eq!(
+            [219, 319].as_ref(),
+            to_vec!(repeated_foreign_message_extension, |x| x
+                .as_message()
+                .unwrap()
+                .get_field_by_name("c")
+                .unwrap()
+                .as_i32()
+                .unwrap())
+        );
+        assert_eq!(
+            [220, 320].as_ref(),
+            to_vec!(repeated_import_message_extension, |x| x
+                .as_message()
+                .unwrap()
+                .get_field_by_name("d")
+                .unwrap()
+                .as_i32()
+                .unwrap())
+        );
+        assert_eq!(
+            [227, 327].as_ref(),
+            to_vec!(repeated_lazy_message_extension, |x| x
+                .as_message()
+                .unwrap()
+                .get_field_by_name("bb")
+                .unwrap()
+                .as_i32()
+                .unwrap())
+        );
+
+        assert_eq!(
+            [
+                protobuf_unittest::test_all_types::NestedEnum::Bar as i32,
+                protobuf_unittest::test_all_types::NestedEnum::Baz as i32,
+            ]
+            .as_ref(),
+            to_vec!(repeated_nested_enum_extension, |x| x
+                .as_enum_number()
+                .unwrap())
+        );
+        assert_eq!(
+            [
+                protobuf_unittest::ForeignEnum::ForeignBar as i32,
+                protobuf_unittest::ForeignEnum::ForeignBaz as i32,
+            ]
+            .as_ref(),
+            to_vec!(repeated_foreign_enum_extension, |x| x
+                .as_enum_number()
+                .unwrap())
+        );
+        assert_eq!(
+            [
+                protobuf_unittest_import::ImportEnum::ImportBar as i32,
+                protobuf_unittest_import::ImportEnum::ImportBaz as i32,
+            ]
+            .as_ref(),
+            to_vec!(repeated_import_enum_extension, |x| x
+                .as_enum_number()
+                .unwrap())
+        );
+
+        assert_eq!(
+            401,
+            message
+                .get_extension(ext!(default_int32_extension))
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            402,
+            message
+                .get_extension(ext!(default_int64_extension))
+                .as_i64()
+                .unwrap()
+        );
+        assert_eq!(
+            403,
+            message
+                .get_extension(ext!(default_uint32_extension))
+                .as_u32()
+                .unwrap()
+        );
+        assert_eq!(
+            404,
+            message
+                .get_extension(ext!(default_uint64_extension))
+                .as_u64()
+                .unwrap()
+        );
+        assert_eq!(
+            405,
+            message
+                .get_extension(ext!(default_sint32_extension))
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            406,
+            message
+                .get_extension(ext!(default_sint64_extension))
+                .as_i64()
+                .unwrap()
+        );
+        assert_eq!(
+            407,
+            message
+                .get_extension(ext!(default_fixed32_extension))
+                .as_u32()
+                .unwrap()
+        );
+        assert_eq!(
+            408,
+            message
+                .get_extension(ext!(default_fixed64_extension))
+                .as_u64()
+                .unwrap()
+        );
+        assert_eq!(
+            409,
+            message
+                .get_extension(ext!(default_sfixed32_extension))
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            410,
+            message
+                .get_extension(ext!(default_sfixed64_extension))
+                .as_i64()
+                .unwrap()
+        );
+        assert_eq!(
+            411.0,
+            message
+                .get_extension(ext!(default_float_extension))
+                .as_f32()
+                .unwrap()
+        );
+        assert_eq!(
+            412.0,
+            message
+                .get_extension(ext!(default_double_extension))
+                .as_f64()
+                .unwrap()
+        );
+        assert_eq!(
+            false,
+            message
+                .get_extension(ext!(default_bool_extension))
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            "415",
+            message
+                .get_extension(ext!(default_string_extension))
+                .as_str()
+                .unwrap()
+        );
+        assert_eq!(
+            b"416".as_ref(),
+            message
+                .get_extension(ext!(default_bytes_extension))
+                .as_bytes()
+                .unwrap()
+        );
+
+        assert_eq!(
+            protobuf_unittest::test_all_types::NestedEnum::Foo as i32,
+            message
+                .get_extension(ext!(default_nested_enum_extension))
+                .as_enum_number()
+                .unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest::ForeignEnum::ForeignFoo as i32,
+            message
+                .get_extension(ext!(default_foreign_enum_extension))
+                .as_enum_number()
+                .unwrap()
+        );
+        assert_eq!(
+            protobuf_unittest_import::ImportEnum::ImportFoo as i32,
+            message
+                .get_extension(ext!(default_import_enum_extension))
+                .as_enum_number()
+                .unwrap()
+        );
+
+        assert_eq!(
+            601,
+            message
+                .get_extension(ext!(oneof_uint32_extension))
+                .as_u32()
+                .unwrap()
+        );
+        assert_eq!(
+            602,
+            message
+                .get_extension(ext!(oneof_nested_message_extension))
+                .as_message()
+                .unwrap()
+                .get_field_by_name("bb")
+                .unwrap()
+                .as_i32()
+                .unwrap()
+        );
+        assert_eq!(
+            "603",
+            message
+                .get_extension(ext!(oneof_string_extension))
+                .as_str()
+                .unwrap()
+        );
+        assert_eq!(
+            b"604".as_ref(),
+            message
+                .get_extension(ext!(oneof_bytes_extension))
+                .as_bytes()
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2207,20 +2916,31 @@ repeated_nested_message <
         let tree = ParseInfoTree::new();
         let mut parser = Parser::new();
         expect_success_and_tree(&mut parser, string_data, &mut message, Rc::clone(&tree));
-        dbg!(message.transcode_to::<protobuf_unittest::TestAllTypes>());
 
         let tree = tree.borrow();
         let d = message.descriptor();
-        expect_location(&tree, &d, "optional_int32", 0, 0, 0, 0, 17);
-        expect_location(&tree, &d, "optional_int64", 0, 1, 0, 1, 17);
-        expect_location(&tree, &d, "optional_double", 0, 2, 2, 2, 22);
+        expect_location(&tree, &d, "optional_int32", 0, (0, 0, 0, 17).into());
+        expect_location(&tree, &d, "optional_int64", 0, (1, 0, 1, 17).into());
+        expect_location(&tree, &d, "optional_double", 0, (2, 2, 2, 22).into());
 
-        expect_location(&tree, &d, "repeated_int32", 0, 3, 0, 3, 17);
-        expect_location(&tree, &d, "repeated_int32", 1, 4, 0, 4, 18);
+        expect_location(&tree, &d, "repeated_int32", 0, (3, 0, 3, 17).into());
+        expect_location(&tree, &d, "repeated_int32", 1, (4, 0, 4, 18).into());
 
-        expect_location(&tree, &d, "optional_nested_message", 0, 5, 0, 7, 1);
-        expect_location(&tree, &d, "repeated_nested_message", 0, 8, 0, 10, 1);
-        expect_location(&tree, &d, "repeated_nested_message", 1, 11, 0, 13, 1);
+        expect_location(&tree, &d, "optional_nested_message", 0, (5, 0, 7, 1).into());
+        expect_location(
+            &tree,
+            &d,
+            "repeated_nested_message",
+            0,
+            (8, 0, 10, 1).into(),
+        );
+        expect_location(
+            &tree,
+            &d,
+            "repeated_nested_message",
+            1,
+            (11, 0, 13, 1).into(),
+        );
 
         expect_location_not_found(&tree, &d, "repeated_int64", 0);
         expect_location_not_found(&tree, &d, "repeated_int32", 6);
@@ -2230,38 +2950,29 @@ repeated_nested_message <
         let nested_tree = tree.get_tree_for_nested(&nested_field, 0).unwrap();
         expect_location(
             &nested_tree.borrow(),
-            &nested_field.kind().as_message().unwrap(),
+            nested_field.kind().as_message().unwrap(),
             "bb",
             0,
-            6,
-            2,
-            6,
-            8,
+            (6, 2, 6, 8).into(),
         );
 
         let nested_field = d.get_field_by_name("repeated_nested_message").unwrap();
         let nested_tree = tree.get_tree_for_nested(&nested_field, 0).unwrap();
         expect_location(
             &nested_tree.borrow(),
-            &nested_field.kind().as_message().unwrap(),
+            nested_field.kind().as_message().unwrap(),
             "bb",
             0,
-            9,
-            2,
-            9,
-            8,
+            (9, 2, 9, 8).into(),
         );
 
         let nested_tree = tree.get_tree_for_nested(&nested_field, 1).unwrap();
         expect_location(
             &nested_tree.borrow(),
-            &nested_field.kind().as_message().unwrap(),
+            nested_field.kind().as_message().unwrap(),
             "bb",
             0,
-            12,
-            2,
-            12,
-            8,
+            (12, 2, 12, 8).into(),
         );
 
         assert!(tree.get_tree_for_nested(&nested_field, 2).is_none());
@@ -2333,7 +3044,7 @@ repeated_nested_message <
             repeated_float: 3.402823567797337e+38\n\
             repeated_float: -3.402823567797337e+38\n";
 
-        assert!(parse_from_str(&parse_string, &mut message));
+        assert!(parse_from_str(parse_string, &mut message));
 
         let message = message.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(2, message.repeated_int32.len());
@@ -2393,10 +3104,14 @@ repeated_nested_message <
                         &d.get_field_by_name(concat!("optional_", stringify!($name))).unwrap(),
                         &mut message)
                     );
-                    assert_eq!(
-                        $value,
-                        message.transcode_to::<TestAllTypes>().unwrap().[<optional_ $name>].unwrap()
-                    );
+
+                    #[allow(clippy::bool_assert_comparison)]
+                    {
+                        assert_eq!(
+                            $value,
+                            message.transcode_to::<TestAllTypes>().unwrap().[<optional_ $name>].unwrap()
+                        );
+                    }
                 }
             };
         }
@@ -2952,11 +3667,11 @@ repeated_nested_message <
     fn set_recursion_limit_unknown_field_value() {
         let mut input = String::new();
         for _ in 0..99 {
-            input.push_str("[");
+            input.push('[');
         }
         input.push_str("\"test_value\"");
         for _ in 0..99 {
-            input.push_str("]");
+            input.push(']');
         }
 
         let mut parser = Parser::new();
@@ -3042,7 +3757,7 @@ repeated_nested_message <
             [somewhere.unknown_extension2]   : \t {\n  \
             unknown_field3   \t :   12345  \n  \
             [somewhere.unknown_extension3]   \t :   {\n  \
-            unknwon_field4:  10\n  
+            unknwon_field4:  10\n
             }\n\
             [somewhere.unknown_extension4] \t {\n\
             }\n\
