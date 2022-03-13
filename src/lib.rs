@@ -2,6 +2,12 @@ mod parser;
 mod serde;
 mod tokenizer;
 
+#[cfg(test)]
+mod test_util;
+
+#[cfg(test)]
+use test_util::FILE_DESCRIPTOR;
+
 pub use parser::*;
 
 #[derive(Debug)]

@@ -1745,99 +1745,15 @@ pub fn parse_from_str(input: &str, output: &mut DynamicMessage) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use once_cell::sync::Lazy;
     use paste::paste;
     use prost_types::Any;
     use std::io::Cursor;
 
+    use crate::test_util::*;
+
     use self::protobuf_unittest::{TestAllExtensions, TestAllTypes};
 
     use super::*;
-
-    macro_rules! descriptor {
-        ($file_descriptor:path, $message_type:ident, $name:expr) => {
-            impl $message_type {
-                pub fn descriptor() -> ::prost_reflect::MessageDescriptor {
-                    $file_descriptor.get_message_by_name($name).unwrap()
-                }
-            }
-        };
-    }
-
-    #[allow(clippy::all)]
-    mod protobuf_unittest_import {
-        include!(concat!(env!("OUT_DIR"), "/protobuf_unittest_import.rs"));
-    }
-
-    #[allow(clippy::all)]
-    mod protobuf_unittest {
-        include!(concat!(env!("OUT_DIR"), "/protobuf_unittest.rs"));
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            TestAllTypes,
-            "protobuf_unittest.TestAllTypes"
-        );
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            TestAllExtensions,
-            "protobuf_unittest.TestAllExtensions"
-        );
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            SparseEnumMessage,
-            "protobuf_unittest.SparseEnumMessage"
-        );
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            TestRequired,
-            "protobuf_unittest.TestRequired"
-        );
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            ForeignMessage,
-            "protobuf_unittest.ForeignMessage"
-        );
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            TestDeprecatedFields,
-            "protobuf_unittest.TestDeprecatedFields"
-        );
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            NestedTestAllTypes,
-            "protobuf_unittest.NestedTestAllTypes"
-        );
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            TestMessageSetContainer,
-            "protobuf_unittest.TestMessageSetContainer"
-        );
-    }
-
-    #[allow(clippy::all)]
-    mod proto2_wireformat_unittest {
-        include!(concat!(env!("OUT_DIR"), "/proto2_wireformat_unittest.rs"));
-    }
-
-    #[allow(clippy::all)]
-    mod proto3_unittest {
-        include!(concat!(env!("OUT_DIR"), "/proto3_unittest.rs"));
-        descriptor!(
-            super::FILE_DESCRIPTOR,
-            TestAllTypes,
-            "proto3_unittest.TestAllTypes"
-        );
-    }
-
-    static FILE_DESCRIPTOR: Lazy<FileDescriptor> = Lazy::new(|| {
-        FileDescriptor::new(
-            prost_types::FileDescriptorSet::decode(
-                include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set_test.bin")).as_ref(),
-            )
-            .unwrap(),
-        )
-        .unwrap()
-    });
 
     #[derive(Debug, Default)]
     struct MockErrorCollctor {
@@ -1896,7 +1812,7 @@ mod tests {
     }
 
     fn expect_failure(input: &str, message: &str, line: usize, col: usize) {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         expected_failure_from(input, message, line, col, &mut proto);
     }
 
@@ -2643,7 +2559,7 @@ mod tests {
 
     #[test]
     fn parse_basic() {
-        let mut message = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut message = DynamicMessage::new(TestAllTypes::default().descriptor());
         let input_stream = Cursor::new(include_bytes!(
             "../tests/text_format_unittest_data_oneof_implemented.txt"
         ));
@@ -2654,7 +2570,7 @@ mod tests {
 
     #[test]
     fn parse_extensions() {
-        let mut message = DynamicMessage::new(TestAllExtensions::descriptor());
+        let mut message = DynamicMessage::new(TestAllExtensions::default().descriptor());
         let input_stream = Cursor::new(include_bytes!(
             "../tests/text_format_unittest_extensions_data.txt"
         ));
@@ -2667,7 +2583,7 @@ mod tests {
     fn parse_enum_field_from_number() {
         let enum_value = protobuf_unittest::test_all_types::NestedEnum::Baz;
         let parse_string = format!("optional_nested_enum: {}", enum_value as i32);
-        let mut message = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut message = DynamicMessage::new(TestAllTypes::default().descriptor());
         assert!(parse_from_str(&parse_string, &mut message));
         assert_eq!(
             enum_value,
@@ -2683,7 +2599,8 @@ mod tests {
         let enum_value = protobuf_unittest::TestSparseEnum::SparseE;
         assert!((enum_value as i32) < 0);
         let parse_string = format!("sparse_enum: {}", enum_value as i32);
-        let mut message = DynamicMessage::new(protobuf_unittest::SparseEnumMessage::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::SparseEnumMessage::default().descriptor());
         assert!(parse_from_str(&parse_string, &mut message));
         assert_eq!(
             enum_value,
@@ -2697,7 +2614,7 @@ mod tests {
     #[test]
     fn parse_unknown_enum_field_proto3() {
         let parse_string = "repeated_nested_enum: [10, -10, 2147483647, -2147483648]";
-        let mut proto = DynamicMessage::new(proto3_unittest::TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(proto3_unittest::TestAllTypes::default().descriptor());
         assert!(parse_from_str(parse_string, &mut proto));
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(4, proto.repeated_nested_enum.len());
@@ -2713,7 +2630,7 @@ mod tests {
             "optional_string: \"\\\"A string with \\' characters \\n and \\r newlines \
             and \\t tabs and \\001 slashes \\\\ and  multiple   spaces \"";
 
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         parse(parse_string.as_bytes(), &mut proto);
 
         let expected_string = "\"A string with ' characters \n and \r newlines and \t tabs \
@@ -2732,7 +2649,7 @@ mod tests {
     #[test]
     fn parse_concatenated_string() {
         let parse_string = "optional_string: \"foo\" \"bar\"\n";
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         parse(parse_string.as_bytes(), &mut proto);
 
         assert_eq!(
@@ -2759,7 +2676,7 @@ mod tests {
     #[test]
     fn parse_float_with_suffix() {
         let parse_string = "optional_float: 1.0f\n";
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         parse(parse_string.as_bytes(), &mut proto);
 
         assert_eq!(
@@ -2783,7 +2700,7 @@ mod tests {
             repeated_nested_message: [ { bb: 1 }, { bb: 2 }]\n\
             RepeatedGroup [{ a: 3 },{ a: 4}]\n";
 
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
         assert!(parse_from_str(parse_string, &mut proto));
 
@@ -2814,7 +2731,7 @@ mod tests {
 
     #[test]
     fn parse_short_repeated_with_trailing_comma() {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let parse_string = "repeated_int32: [456,]\n";
         assert!(!parse_from_str(parse_string, &mut proto));
         let parse_string = "repeated_nested_enum: [ FOO , ]";
@@ -2829,7 +2746,7 @@ mod tests {
 
     #[test]
     fn parse_short_repeated_empty() {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let parse_string = "repeated_int32: []\n\
             repeated_nested_enum: []\n\
             repeated_string: []\n\
@@ -2867,7 +2784,7 @@ mod tests {
             repeated_nested_message: []\n\
             RepeatedGroup []\n";
 
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
         assert!(parse_from_str(parse_string, &mut proto));
 
@@ -2898,7 +2815,7 @@ mod tests {
 
     #[test]
     fn parse_info_tree_building() {
-        let mut message = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut message = DynamicMessage::new(TestAllTypes::default().descriptor());
         let string_data = "optional_int32: 1
 optional_int64: 2
   optional_double: 2.4
@@ -2983,7 +2900,7 @@ repeated_nested_message <
         let parse_string = "optional_int32: 1  # a comment\n\
             optional_int64: 2  # another comment";
 
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         parse(parse_string.as_bytes(), &mut proto);
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
 
@@ -2994,7 +2911,7 @@ repeated_nested_message <
     #[test]
     fn optional_colon() {
         let parse_string = "optional_nested_message: { bb: 1}\n";
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         parse(parse_string.as_bytes(), &mut proto);
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
 
@@ -3003,7 +2920,8 @@ repeated_nested_message <
 
     #[test]
     fn allow_partial() {
-        let mut message = DynamicMessage::new(protobuf_unittest::TestRequired::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::TestRequired::default().descriptor());
         let mut parser = Parser::new();
         parser.allow_partial_message(true);
         parser.parse("a: 1".as_bytes(), &mut message);
@@ -3015,7 +2933,7 @@ repeated_nested_message <
 
     #[test]
     fn parse_exotic() {
-        let mut message = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut message = DynamicMessage::new(TestAllTypes::default().descriptor());
         let parse_string = "\
             repeated_int32: -1\n\
             repeated_int32: -2147483648\n\
@@ -3093,7 +3011,7 @@ repeated_nested_message <
 
     #[test]
     fn parse_field_value_from_string() {
-        let d = TestAllTypes::descriptor();
+        let d = TestAllTypes::default().descriptor();
         let mut message = DynamicMessage::new(d.clone());
 
         macro_rules! expect_field {
@@ -3299,7 +3217,7 @@ repeated_nested_message <
     #[test]
     fn allow_ignore_capitalization_error() {
         let mut parser = Parser::new();
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
         assert!(!parser.parse_from_str("Optional_Double: 10.0", &mut proto));
         assert!(!parser.parse_from_str("oPtIoNaLgRoUp { a: 15 }", &mut proto));
@@ -3545,7 +3463,8 @@ repeated_nested_message <
 
     #[test]
     fn missing_required() {
-        let mut message = DynamicMessage::new(protobuf_unittest::TestRequired::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::TestRequired::default().descriptor());
         expected_failure_from(
             "a: 1",
             "Message missing required fields: b,c",
@@ -3557,7 +3476,8 @@ repeated_nested_message <
 
     #[test]
     fn parse_duplicate_required() {
-        let mut message = DynamicMessage::new(protobuf_unittest::TestRequired::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::TestRequired::default().descriptor());
         expected_failure_from(
             "a: 1 b: 2 c: 3 a: 1",
             "Non-repeated field \"a\" is specified multiple times.",
@@ -3569,7 +3489,8 @@ repeated_nested_message <
 
     #[test]
     fn parse_duplicate_optional() {
-        let mut message = DynamicMessage::new(protobuf_unittest::ForeignMessage::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::ForeignMessage::default().descriptor());
         expected_failure_from(
             "c: 1 c: 2",
             "Non-repeated field \"c\" is specified multiple times.",
@@ -3581,7 +3502,8 @@ repeated_nested_message <
 
     #[test]
     fn merge_duplicate_required() {
-        let mut message = DynamicMessage::new(protobuf_unittest::TestRequired::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::TestRequired::default().descriptor());
         let parser = Parser::new();
         assert!(parser.merge_from_str("a: 1 b: 2 c: 3 a: 4", &mut message));
 
@@ -3593,7 +3515,8 @@ repeated_nested_message <
 
     #[test]
     fn merge_duplicate_optional() {
-        let mut message = DynamicMessage::new(protobuf_unittest::ForeignMessage::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::ForeignMessage::default().descriptor());
         let parser = Parser::new();
         assert!(parser.merge_from_str("c: 1 c: 2", &mut message));
 
@@ -3605,7 +3528,8 @@ repeated_nested_message <
 
     #[test]
     fn explicit_delimiters() {
-        let mut message = DynamicMessage::new(protobuf_unittest::TestRequired::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::TestRequired::default().descriptor());
         assert!(parse_from_str("a:1,b:2,c:3", &mut message));
 
         let message = message
@@ -3619,7 +3543,7 @@ repeated_nested_message <
     #[test]
     fn parse_deprecated_field() {
         let mut message =
-            DynamicMessage::new(protobuf_unittest::TestDeprecatedFields::descriptor());
+            DynamicMessage::new(protobuf_unittest::TestDeprecatedFields::default().descriptor());
         let mut parser = Parser::new();
         expect_message(
             &mut parser,
@@ -3643,7 +3567,8 @@ repeated_nested_message <
         }
 
         let tree = ParseInfoTree::new();
-        let mut message = DynamicMessage::new(protobuf_unittest::NestedTestAllTypes::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::NestedTestAllTypes::default().descriptor());
         let mut parser = Parser::new();
         expect_success_and_tree(&mut parser, &input, &mut message, Rc::clone(&tree));
 
@@ -3679,7 +3604,8 @@ repeated_nested_message <
         parser.set_recursion_limit(100);
 
         let tree = ParseInfoTree::new();
-        let mut message = DynamicMessage::new(protobuf_unittest::NestedTestAllTypes::descriptor());
+        let mut message =
+            DynamicMessage::new(protobuf_unittest::NestedTestAllTypes::default().descriptor());
         expect_success_and_tree(
             &mut parser,
             &format!("unknown_nested_array: {}", &input),
@@ -3708,7 +3634,7 @@ repeated_nested_message <
             optional_int32: 321\n  \
             optional_string: \"teststr0\"\n\
             }\n";
-        let finder = Finder::from_descriptors(&[&FILE_DESCRIPTOR]);
+        let finder = Finder::from_descriptors(&[&crate::FILE_DESCRIPTOR]);
         let mut parser = Parser::new();
         parser.set_fineder(finder);
 
@@ -3717,12 +3643,12 @@ repeated_nested_message <
 
     #[test]
     fn parse_extension_field_with_additional_white_spaces() {
-        let mut proto = DynamicMessage::new(TestAllExtensions::descriptor());
+        let mut proto = DynamicMessage::new(TestAllExtensions::default().descriptor());
 
         let parse_string = "[protobuf_unittest.optional_int32_extension]   : \t 101\n\
             [protobuf_unittest.optional_int64_extension] \t : 102\n";
 
-        let finder = Finder::from_descriptors(&[&FILE_DESCRIPTOR]);
+        let finder = Finder::from_descriptors(&[&crate::FILE_DESCRIPTOR]);
         let mut parser = Parser::new();
         parser.set_fineder(finder);
         assert!(parser.parse_from_str(parse_string, &mut proto));
@@ -3730,7 +3656,7 @@ repeated_nested_message <
 
     #[test]
     fn parse_normal_field_with_additional_white_spaces() {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
         let parse_string = "repeated_int32  : \t 1 \n\
             repeated_int32: 2\n\
@@ -3748,7 +3674,7 @@ repeated_nested_message <
 
     #[test]
     fn parse_skipped_field_with_additional_white_spaces() {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let parse_string = "repeated_int32: 321\n\
             unknown_field1  : \t 12345\n\
             [somewhere.unknown_extension1]   {\n  \
@@ -3770,7 +3696,7 @@ repeated_nested_message <
 
     #[test]
     fn test_unknown_field() {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let mut parser = Parser::new();
         assert!(!parser.parse_from_str("unknown_field: 12345", &mut proto));
         assert!(!parser.parse_from_str("12345678: 12345", &mut proto));
@@ -3864,7 +3790,7 @@ repeated_nested_message <
 
     #[test]
     fn test_any_in_unknown_field() {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let mut parser = Parser::new();
         parser.allow_unknown_field(true);
         assert!(parser.parse_from_str(
@@ -3878,7 +3804,7 @@ repeated_nested_message <
 
     #[test]
     fn test_unknown_extensions() {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let mut parser = Parser::new();
         let message_with_ext = "\
             [test.extension1] {\n\
@@ -3899,7 +3825,7 @@ repeated_nested_message <
 
     #[test]
     fn test_parse_message_by_field_number() {
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let text = "\
             34: 1\n\
             repeated_uint64: 2\n\
@@ -3911,7 +3837,7 @@ repeated_nested_message <
         assert_eq!(&proto.repeated_uint64, &[1, 2]);
 
         let mut proto =
-            DynamicMessage::new(protobuf_unittest::TestMessageSetContainer::descriptor());
+            DynamicMessage::new(protobuf_unittest::TestMessageSetContainer::default().descriptor());
         let text = "\
             1 {\n\
                 1545008 {\n\
@@ -3959,7 +3885,7 @@ repeated_nested_message <
                 .unwrap()
         );
 
-        let mut proto = DynamicMessage::new(TestAllTypes::descriptor());
+        let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         parser.allow_field_number(false);
         let text = "34:1\n";
         assert!(!parser.parse_from_str(text, &mut proto));
