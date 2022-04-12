@@ -1,5 +1,5 @@
 mod parser;
-mod serde;
+// mod serde;
 mod tokenizer;
 
 #[cfg(test)]
