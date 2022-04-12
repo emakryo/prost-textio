@@ -1,4 +1,4 @@
-use super::{ProtoError, Result};
+use anyhow::{bail, Result};
 use std::{cell::RefCell, io::Read, rc::Rc};
 
 trait CharacterClass {
@@ -49,8 +49,7 @@ impl Default for Token {
 
 impl Token {
     pub fn str(&self) -> Result<&str> {
-        std::str::from_utf8(&self.text)
-            .map_err(|_| ProtoError::Todo("Failed to interpret as utf8".into()))
+        Ok(std::str::from_utf8(&self.text)?)
     }
 }
 
@@ -800,28 +799,16 @@ pub fn parse_integer(text: &[u8], max_value: u64) -> Result<u64> {
             base = 8;
         }
     }
-    let s = std::str::from_utf8(&text[idx..]).map_err(|_| ProtoError::Todo("".into()))?;
+    let s = std::str::from_utf8(&text[idx..])?;
 
-    let val = u64::from_str_radix(s, base).map_err(|_| ProtoError::Todo("".into()))?;
+    let val = u64::from_str_radix(s, base)?;
 
     if val <= max_value {
         Ok(val)
     } else {
-        Err(ProtoError::Todo("".into()))
+        bail!("TODO");
     }
 }
-
-// #[derive(Clone)]
-// enum TokenValue {
-//     Start,
-//     EOF,
-//     Ident(String),
-//     Unsigned(u64),
-//     Signed(i64),
-//     NewLine,
-//     Whitespace,
-//     Slash,
-// }
 
 #[cfg(test)]
 mod tests {

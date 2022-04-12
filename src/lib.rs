@@ -26,4 +26,5 @@ pub enum ProtoError {
     Todo(String),
     Eof,
 }
-type Result<T> = std::result::Result<T, ProtoError>;
+
+pub type Result<T> = std::result::Result<T, ProtoError>;

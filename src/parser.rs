@@ -1,5 +1,6 @@
 use std::{borrow::Cow, cell::RefCell, collections::HashMap, io::Read, rc::Rc};
 
+use anyhow::{anyhow, bail, Result};
 use prost::{bytes::Bytes, Message};
 use prost_reflect::{
     DynamicMessage, ExtensionDescriptor, FieldDescriptor, FileDescriptor, Kind, MessageDescriptor,
@@ -7,10 +8,7 @@ use prost_reflect::{
 };
 use prost_types::FieldDescriptorProto;
 
-use crate::{
-    tokenizer::{parse_integer, parse_string_append, ErrorCollector, TokenType, Tokenizer},
-    ProtoError, Result,
-};
+use crate::tokenizer::{parse_integer, parse_string_append, ErrorCollector, TokenType, Tokenizer};
 
 #[derive(Clone)]
 pub struct Parser {
@@ -36,7 +34,7 @@ impl Parser {
         Self::default()
     }
 
-    pub fn parse<R: Read>(&self, reader: R, output: &mut DynamicMessage) -> bool {
+    pub fn parse<R: Read>(&self, reader: R, output: &mut DynamicMessage) -> Result<()> {
         output.clear();
         let mut parser = ParserImpl::new(
             reader,
@@ -49,7 +47,7 @@ impl Parser {
         self.merge_using_impl(output, &mut parser)
     }
 
-    pub fn parse_from_str(&self, input: &str, message: &mut DynamicMessage) -> bool {
+    pub fn parse_from_str(&self, input: &str, message: &mut DynamicMessage) -> Result<()> {
         self.parse(input.as_bytes(), message)
     }
 
@@ -57,26 +55,23 @@ impl Parser {
         &self,
         output: &mut DynamicMessage,
         parser_impl: &mut ParserImpl<R>,
-    ) -> bool {
-        if parser_impl.parse(output).is_err() {
-            return false;
-        }
+    ) -> Result<()> {
+        parser_impl.parse(output)?;
+
         if !self.opts.allow_partial && !output.is_initialized() {
             let missing_fields = output.find_initialization_errors();
-            parser_impl.report_error_pos(
-                0,
-                0,
-                &format!(
-                    "Message missing required fields: {}",
-                    missing_fields.join(",")
-                ),
+            let msg = format!(
+                "Message missing required fields: {}",
+                missing_fields.join(",")
             );
-            return false;
+
+            parser_impl.report_error_pos(0, 0, &msg);
+            bail!("{}", msg);
         }
-        true
+        Ok(())
     }
 
-    pub fn merge<R: Read>(&self, reader: R, output: &mut DynamicMessage) -> bool {
+    pub fn merge<R: Read>(&self, reader: R, output: &mut DynamicMessage) -> Result<()> {
         let mut opts = self.opts.clone();
         opts.singular_overwrite_policy = SingularOverwritePolicy::Allow;
 
@@ -91,7 +86,7 @@ impl Parser {
         self.merge_using_impl(output, &mut parser)
     }
 
-    pub fn merge_from_str(&self, input: &str, message: &mut DynamicMessage) -> bool {
+    pub fn merge_from_str(&self, input: &str, message: &mut DynamicMessage) -> Result<()> {
         self.merge(input.as_bytes(), message)
     }
 
@@ -108,7 +103,7 @@ impl Parser {
         input: &str,
         field: &FieldDescriptor,
         message: &mut DynamicMessage,
-    ) -> bool {
+    ) -> Result<()> {
         let mut parser = ParserImpl::new(
             input.as_bytes(),
             Rc::clone(&self.error_collector),
@@ -117,7 +112,7 @@ impl Parser {
             self.opts.clone(),
         );
 
-        parser.parse_field(field, message).is_ok()
+        parser.parse_field(field, message)
     }
 
     pub fn allow_case_insensitive_field(&mut self, allow: bool) {
@@ -153,7 +148,7 @@ pub fn parse_field_value_from_string(
     input: &str,
     field: &FieldDescriptor,
     message: &mut DynamicMessage,
-) -> bool {
+) -> Result<()> {
     Parser::new().parse_field_value_from_string(input, field, message)
 }
 
@@ -500,7 +495,7 @@ impl<'a, R: Read> ParserImpl<R> {
         };
 
         if !self.looking_at_type(TokenType::Eof) {
-            return Err(ProtoError::Todo("Remaining tokens".into()));
+            bail!("Remaining tokens");
         }
         Ok(())
     }
@@ -558,7 +553,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 "Message is too deep, the parser exceeded the configured recursion limit of {}.",
                 self.init_recursion_limit
             ));
-            return Err(ProtoError::Todo("Recursion limit exceeded".into()));
+            bail!("Recursion limit exceeded");
         }
         self.opts.recursion_limit -= 1;
         Ok(())
@@ -588,7 +583,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 let value_descriptor = self
                     .finder
                     .find_any_type(message, &prefix, &full_type_name)
-                    .ok_or_else(|| ProtoError::Todo("Any type not found".into()))?;
+                    .ok_or_else(|| anyhow!("Any type not found"))?;
 
                 let serialized_value = self.consume_any_value(&value_descriptor)?;
 
@@ -597,7 +592,7 @@ impl<'a, R: Read> ParserImpl<R> {
                         || (!any_value_field.is_list() && message.has_field(&any_value_field)))
                 {
                     self.report_error("Non repeated Any specified multiple times");
-                    return Err(ProtoError::Todo("Duplicated Any".into()));
+                    bail!("Duplicated Any");
                 }
 
                 message.set_field(
@@ -629,7 +624,7 @@ impl<'a, R: Read> ParserImpl<R> {
                         field_name,
                         descriptor.full_name(),
                     ));
-                    return Err(ProtoError::Todo("Unknown extension".into()));
+                    bail!("Unknown extension");
                 } else {
                     self.report_warning(&format!(
                         "Ignore extension {} which is not defined or is not an extension of {}.",
@@ -698,7 +693,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 );
                 if !self.opts.allow_unknown_field {
                     self.report_error(&msg);
-                    return Err(ProtoError::Todo("Unknown field".into()));
+                    bail!("Unknown field");
                 } else {
                     self.report_warning(&msg);
                 }
@@ -731,7 +726,7 @@ impl<'a, R: Read> ParserImpl<R> {
                     "Non-repeated field \"{}\" is specified multiple times.",
                     field_name,
                 ));
-                return Err(ProtoError::Todo("Duplicated field".into()));
+                bail!("Duplicated field");
             }
             if let Some(oneof) = field.containing_oneof() {
                 if message.has_oneof(&oneof) {
@@ -740,7 +735,7 @@ impl<'a, R: Read> ParserImpl<R> {
                             "Field '{}' is specified along with field '{}', another member of oneof '{}'.",
                             &field_name, other_field.name(), oneof.name()
                         ));
-                        return Err(ProtoError::Todo("Duplicaed oneof".into()));
+                        bail!("Duplicaed oneof");
                     }
                 }
             }
@@ -759,8 +754,7 @@ impl<'a, R: Read> ParserImpl<R> {
                         .mut_value_of(message)
                         .as_message_mut()
                         .unwrap()
-                        .merge(tmp.as_bytes())
-                        .map_err(|e| ProtoError::Todo(e.to_string()))?;
+                        .merge(tmp.as_bytes())?;
 
                     return Ok(());
                 }
@@ -876,11 +870,11 @@ impl<'a, R: Read> ParserImpl<R> {
             let list = field
                 .mut_value_of(message)
                 .as_list_mut()
-                .ok_or_else(|| ProtoError::Todo("".into()))?;
+                .ok_or_else(|| anyhow!("TODO"))?;
             if let Kind::Message(m) = field.kind() {
                 list.push(Value::Message(DynamicMessage::new(m)));
             } else {
-                return Err(ProtoError::Todo("Field type is not message".into()));
+                bail!("Field type is not message");
             }
             self.consume_message(
                 list.last_mut().unwrap().as_message_mut().unwrap(),
@@ -890,7 +884,7 @@ impl<'a, R: Read> ParserImpl<R> {
             let mut inner = if let Kind::Message(m) = field.kind() {
                 DynamicMessage::new(m)
             } else {
-                return Err(ProtoError::Todo("".into()));
+                bail!("TODO");
             };
             self.consume_message(&mut inner, &delimiter)?;
             field.set_into(Value::Message(inner), message);
@@ -968,7 +962,7 @@ impl<'a, R: Read> ParserImpl<R> {
                             field.name(),
                             &value,
                         ));
-                        return Err(ProtoError::Todo("Invalid value for bool".into()));
+                        bail!("Invalid value for bool");
                     }
                 }
             }
@@ -989,7 +983,7 @@ impl<'a, R: Read> ParserImpl<R> {
                         "Expected integer or identifier, got: {}",
                         String::from_utf8_lossy(&self.tokenizer.current().text),
                     ));
-                    return Err(ProtoError::Todo("Invalid value in enum".into()));
+                    bail!("Invalid value in enum");
                 }
 
                 if enum_value.is_none() {
@@ -1001,7 +995,7 @@ impl<'a, R: Read> ParserImpl<R> {
                             value,
                             field.name(),
                         ));
-                        return Err(ProtoError::Todo("Unknown enum value".into()));
+                        bail!("Unknown enum value");
                     } else {
                         self.report_warning(&format!(
                             "Unknown enumeration value of \"{}\" for field \"{}\".",
@@ -1061,7 +1055,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 text
             ));
             self.opts.recursion_limit += 1;
-            return Err(ProtoError::Todo("Unexpected token while skipping".into()));
+            bail!("Unexpected token while skipping");
         }
 
         if has_minus && self.looking_at_type(TokenType::Ident) {
@@ -1072,7 +1066,7 @@ impl<'a, R: Read> ParserImpl<R> {
                     String::from_utf8_lossy(&text),
                 ));
                 self.opts.recursion_limit += 1;
-                return Err(ProtoError::Todo("Invalid float number".into()));
+                bail!("Invalid float number");
             }
         }
 
@@ -1110,7 +1104,7 @@ impl<'a, R: Read> ParserImpl<R> {
             "Expected identifier, got: {}",
             String::from_utf8_lossy(&self.tokenizer.current().text),
         ));
-        Err(ProtoError::Todo("Failed consume identifier".into()))
+        bail!("Failed consume identifier")
     }
 
     fn consume_identifier_before_whitespace(&mut self) -> Result<String> {
@@ -1144,7 +1138,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 "Expected string, got: {}",
                 String::from_utf8_lossy(&self.tokenizer.current().text),
             ));
-            return Err(ProtoError::Todo("Failed consume string".into()));
+            bail!("Failed consume string");
         }
 
         let mut text = String::new();
@@ -1161,7 +1155,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 "Expected integer, got: {}",
                 String::from_utf8_lossy(&self.tokenizer.current().text),
             ));
-            return Err(ProtoError::Todo("Faield consume integer".into()));
+            bail!("Faield consume integer");
         }
 
         if let Ok(value) = parse_integer(&self.tokenizer.current().text, max_value) {
@@ -1172,7 +1166,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 "Integer out of range ({})",
                 self.tokenizer.current().str().unwrap()
             ));
-            Err(ProtoError::Todo("".into()))
+            bail!("TODO");
         }
     }
 
@@ -1202,7 +1196,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 "Expected integer, got: {}",
                 self.tokenizer.current().str()?
             ));
-            return Err(ProtoError::Todo("Faild to parse double".into()));
+            bail!("Faild to parse double");
         }
 
         let text = self.tokenizer.current().str()?;
@@ -1211,12 +1205,10 @@ impl<'a, R: Read> ParserImpl<R> {
                 "Expected decimal number, got {}",
                 self.tokenizer.current().str()?
             ));
-            return Err(ProtoError::Todo("Faild to parse double".into()));
+            bail!("Faild to parse double");
         }
 
-        let value = text
-            .parse::<f64>()
-            .map_err(|e| ProtoError::Todo(e.to_string()))?;
+        let value = text.parse::<f64>()?;
 
         self.tokenizer.next();
         Ok(value)
@@ -1236,9 +1228,7 @@ impl<'a, R: Read> ParserImpl<R> {
             if last == "f" || last == "F" {
                 text = &text[..text.len() - 1];
             }
-            let v = text
-                .parse::<f64>()
-                .map_err(|e| ProtoError::Todo(e.to_string()))?;
+            let v = text.parse::<f64>()?;
             self.tokenizer.next();
             v
         } else if self.looking_at_type(TokenType::Ident) {
@@ -1252,7 +1242,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 self.tokenizer.next();
             } else {
                 self.report_error(&format!("Expected double, got: {}", text));
-                return Err(ProtoError::Todo("Failed to consume double".into()));
+                bail!("Failed to consume double");
             }
             v
         } else {
@@ -1260,7 +1250,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 "Expected double, got: {}",
                 self.tokenizer.current().str()?,
             ));
-            return Err(ProtoError::Todo("Failed to consume double".into()));
+            bail!("Failed to consume double");
         };
 
         if negative {
@@ -1295,7 +1285,7 @@ impl<'a, R: Read> ParserImpl<R> {
         } else {
             if !value.is_initialized() {
                 self.report_error("Value of type \"{}\" stored in google.protobuf.Any has missing required fields");
-                return Err(ProtoError::Todo("".into()));
+                bail!("TODO");
             }
             value.encode_to_vec()
         };
@@ -1313,7 +1303,7 @@ impl<'a, R: Read> ParserImpl<R> {
                 std::str::from_utf8(current_value).unwrap()
             );
             self.report_error(&msg);
-            return Err(ProtoError::Todo(msg));
+            bail!("{}", msg);
         }
 
         self.tokenizer.next();
@@ -1332,7 +1322,7 @@ impl<'a, R: Read> ParserImpl<R> {
             self.tokenizer.next();
             Ok(())
         } else {
-            Err(ProtoError::Todo("".into()))
+            bail!("TODO");
         }
     }
 
@@ -1348,7 +1338,7 @@ impl<'a, R: Read> ParserImpl<R> {
             self.tokenizer.next();
             Ok(())
         } else {
-            Err(ProtoError::Todo("".into()))
+            bail!("TODO");
         }
     }
 }
@@ -1734,12 +1724,12 @@ impl FieldDescriptorExt for FieldDescriptor {
     }
 }
 
-pub fn parse<R: Read>(input: R, output: &mut DynamicMessage) -> bool {
+pub fn parse<R: Read>(input: R, output: &mut DynamicMessage) -> Result<()> {
     let parser = Parser::new();
     parser.parse(input, output)
 }
 
-pub fn parse_from_str(input: &str, output: &mut DynamicMessage) -> bool {
+pub fn parse_from_str(input: &str, output: &mut DynamicMessage) -> Result<()> {
     parse(input.as_bytes(), output)
 }
 
@@ -1749,9 +1739,8 @@ mod tests {
     use prost_types::Any;
     use std::io::Cursor;
 
+    use crate::test_util::protobuf_unittest::{TestAllExtensions, TestAllTypes};
     use crate::test_util::*;
-
-    use self::protobuf_unittest::{TestAllExtensions, TestAllTypes};
 
     use super::*;
 
@@ -1779,7 +1768,7 @@ mod tests {
         let error_collector = Rc::new(RefCell::new(MockErrorCollctor::default()));
         parser.record_error_to(Rc::clone(&error_collector) as Rc<RefCell<dyn ErrorCollector>>);
         parser.write_localtions_to(Rc::clone(&info_tree));
-        assert!(parser.parse_from_str(text, message));
+        assert!(parser.parse_from_str(text, message).is_ok());
     }
 
     fn expect_location(
@@ -1838,7 +1827,7 @@ mod tests {
     ) {
         let error_collector = Rc::new(RefCell::new(MockErrorCollctor::default()));
         parser.record_error_to(Rc::clone(&error_collector) as Rc<RefCell<dyn ErrorCollector>>);
-        assert_eq!(parser.parse_from_str(input, proto), expected_result);
+        assert_eq!(parser.parse_from_str(input, proto).is_ok(), expected_result);
         assert_eq!(
             format!("{}:{}: {}\n", line, col, message),
             error_collector.borrow().text
@@ -2564,7 +2553,7 @@ mod tests {
             "../tests/text_format_unittest_data_oneof_implemented.txt"
         ));
 
-        assert!(parse(input_stream, &mut message));
+        assert!(parse(input_stream, &mut message).is_ok());
         assert_all_fields_set(&message);
     }
 
@@ -2575,7 +2564,7 @@ mod tests {
             "../tests/text_format_unittest_extensions_data.txt"
         ));
 
-        assert!(parse(input_stream, &mut message));
+        assert!(parse(input_stream, &mut message).is_ok());
         assert_all_extensions_set(&message);
     }
 
@@ -2584,7 +2573,7 @@ mod tests {
         let enum_value = protobuf_unittest::test_all_types::NestedEnum::Baz;
         let parse_string = format!("optional_nested_enum: {}", enum_value as i32);
         let mut message = DynamicMessage::new(TestAllTypes::default().descriptor());
-        assert!(parse_from_str(&parse_string, &mut message));
+        assert!(parse_from_str(&parse_string, &mut message).is_ok());
         assert_eq!(
             enum_value,
             message
@@ -2601,7 +2590,7 @@ mod tests {
         let parse_string = format!("sparse_enum: {}", enum_value as i32);
         let mut message =
             DynamicMessage::new(protobuf_unittest::SparseEnumMessage::default().descriptor());
-        assert!(parse_from_str(&parse_string, &mut message));
+        assert!(parse_from_str(&parse_string, &mut message).is_ok());
         assert_eq!(
             enum_value,
             message
@@ -2615,7 +2604,7 @@ mod tests {
     fn parse_unknown_enum_field_proto3() {
         let parse_string = "repeated_nested_enum: [10, -10, 2147483647, -2147483648]";
         let mut proto = DynamicMessage::new(proto3_unittest::TestAllTypes::default().descriptor());
-        assert!(parse_from_str(parse_string, &mut proto));
+        assert!(parse_from_str(parse_string, &mut proto).is_ok());
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(4, proto.repeated_nested_enum.len());
         assert_eq!(10, proto.repeated_nested_enum[0]);
@@ -2631,7 +2620,7 @@ mod tests {
             and \\t tabs and \\001 slashes \\\\ and  multiple   spaces \"";
 
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
-        parse(parse_string.as_bytes(), &mut proto);
+        parse(parse_string.as_bytes(), &mut proto).ok();
 
         let expected_string = "\"A string with ' characters \n and \r newlines and \t tabs \
             and \u{001} slashes \\ and  multiple   spaces ";
@@ -2650,7 +2639,7 @@ mod tests {
     fn parse_concatenated_string() {
         let parse_string = "optional_string: \"foo\" \"bar\"\n";
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
-        parse(parse_string.as_bytes(), &mut proto);
+        parse(parse_string.as_bytes(), &mut proto).ok();
 
         assert_eq!(
             "foobar",
@@ -2662,7 +2651,7 @@ mod tests {
         );
 
         let parse_string = "optional_string: \"foo\"\n\"bar\"\n";
-        parse(parse_string.as_bytes(), &mut proto);
+        parse(parse_string.as_bytes(), &mut proto).ok();
         assert_eq!(
             "foobar",
             proto
@@ -2677,7 +2666,7 @@ mod tests {
     fn parse_float_with_suffix() {
         let parse_string = "optional_float: 1.0f\n";
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
-        parse(parse_string.as_bytes(), &mut proto);
+        parse(parse_string.as_bytes(), &mut proto).ok();
 
         assert_eq!(
             1.0f32,
@@ -2702,7 +2691,7 @@ mod tests {
 
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
-        assert!(parse_from_str(parse_string, &mut proto));
+        assert!(parse_from_str(parse_string, &mut proto).is_ok());
 
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(3, proto.repeated_int32.len());
@@ -2710,7 +2699,7 @@ mod tests {
         assert_eq!(456, proto.repeated_int32[1]);
         assert_eq!(789, proto.repeated_int32[2]);
 
-        use protobuf_unittest::test_all_types::NestedEnum;
+        use crate::test_util::protobuf_unittest::test_all_types::NestedEnum;
         assert_eq!(3, proto.repeated_nested_enum.len());
         assert_eq!(NestedEnum::Foo as i32, proto.repeated_nested_enum[0]);
         assert_eq!(NestedEnum::Bar as i32, proto.repeated_nested_enum[1]);
@@ -2733,15 +2722,15 @@ mod tests {
     fn parse_short_repeated_with_trailing_comma() {
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let parse_string = "repeated_int32: [456,]\n";
-        assert!(!parse_from_str(parse_string, &mut proto));
+        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
         let parse_string = "repeated_nested_enum: [ FOO , ]";
-        assert!(!parse_from_str(parse_string, &mut proto));
+        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
         let parse_string = "repeated_string: [ \"foo\", ]";
-        assert!(!parse_from_str(parse_string, &mut proto));
+        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
         let parse_string = "repeated_nested_message: [ { bb: 1 }, ]";
-        assert!(!parse_from_str(parse_string, &mut proto));
+        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
         let parse_string = "RepeatedGroup [{ a: 3 },]\n";
-        assert!(!parse_from_str(parse_string, &mut proto));
+        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
     }
 
     #[test]
@@ -2753,7 +2742,7 @@ mod tests {
             repeated_nested_message: []\n\
             RepeatedGroup []\n";
 
-        assert!(parse_from_str(parse_string, &mut proto));
+        assert!(parse_from_str(parse_string, &mut proto).is_ok());
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
 
         assert_eq!(0, proto.repeated_int32.len());
@@ -2786,7 +2775,7 @@ mod tests {
 
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
-        assert!(parse_from_str(parse_string, &mut proto));
+        assert!(parse_from_str(parse_string, &mut proto).is_ok());
 
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(3, proto.repeated_int32.len());
@@ -2794,7 +2783,7 @@ mod tests {
         assert_eq!(456, proto.repeated_int32[1]);
         assert_eq!(789, proto.repeated_int32[2]);
 
-        use protobuf_unittest::test_all_types::NestedEnum;
+        use crate::test_util::protobuf_unittest::test_all_types::NestedEnum;
         assert_eq!(3, proto.repeated_nested_enum.len());
         assert_eq!(NestedEnum::Foo as i32, proto.repeated_nested_enum[0]);
         assert_eq!(NestedEnum::Bar as i32, proto.repeated_nested_enum[1]);
@@ -2901,7 +2890,7 @@ repeated_nested_message <
             optional_int64: 2  # another comment";
 
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
-        parse(parse_string.as_bytes(), &mut proto);
+        parse(parse_string.as_bytes(), &mut proto).ok();
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
 
         assert_eq!(1, proto.optional_int32.unwrap());
@@ -2912,7 +2901,7 @@ repeated_nested_message <
     fn optional_colon() {
         let parse_string = "optional_nested_message: { bb: 1}\n";
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
-        parse(parse_string.as_bytes(), &mut proto);
+        parse(parse_string.as_bytes(), &mut proto).ok();
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
 
         assert_eq!(1, proto.optional_nested_message.unwrap().bb.unwrap());
@@ -2924,7 +2913,7 @@ repeated_nested_message <
             DynamicMessage::new(protobuf_unittest::TestRequired::default().descriptor());
         let mut parser = Parser::new();
         parser.allow_partial_message(true);
-        parser.parse("a: 1".as_bytes(), &mut message);
+        parser.parse("a: 1".as_bytes(), &mut message).ok();
 
         assert_eq!(1, message.get_field_by_name("a").unwrap().as_i32().unwrap());
         assert!(!message.has_field_by_name("b"));
@@ -2962,7 +2951,7 @@ repeated_nested_message <
             repeated_float: 3.402823567797337e+38\n\
             repeated_float: -3.402823567797337e+38\n";
 
-        assert!(parse_from_str(parse_string, &mut message));
+        assert!(parse_from_str(parse_string, &mut message).is_ok());
 
         let message = message.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(2, message.repeated_int32.len());
@@ -3020,7 +3009,7 @@ repeated_nested_message <
                     assert!(super::parse_field_value_from_string(
                         $value_str,
                         &d.get_field_by_name(concat!("optional_", stringify!($name))).unwrap(),
-                        &mut message)
+                        &mut message).is_ok()
                     );
 
                     #[allow(clippy::bool_assert_comparison)]
@@ -3040,7 +3029,7 @@ repeated_nested_message <
                     assert!(super::parse_field_value_from_string(
                         $value_str,
                         &d.get_field_by_name(concat!("optional_", stringify!($name))).unwrap(),
-                        &mut message)
+                        &mut message).is_ok()
                     );
                     approx::assert_ulps_eq!(
                         $value,
@@ -3058,7 +3047,8 @@ repeated_nested_message <
                     &d.get_field_by_name(concat!("optional_", stringify!($name)))
                         .unwrap(),
                     &mut message
-                ));
+                )
+                .is_ok());
             };
         }
 
@@ -3146,7 +3136,8 @@ repeated_nested_message <
             "<bb:12>",
             &d.get_field_by_name("optional_nested_message").unwrap(),
             &mut message
-        ));
+        )
+        .is_ok());
         assert_eq!(
             12,
             message
@@ -3219,16 +3210,24 @@ repeated_nested_message <
         let mut parser = Parser::new();
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
-        assert!(!parser.parse_from_str("Optional_Double: 10.0", &mut proto));
-        assert!(!parser.parse_from_str("oPtIoNaLgRoUp { a: 15 }", &mut proto));
+        assert!(!parser
+            .parse_from_str("Optional_Double: 10.0", &mut proto)
+            .is_ok());
+        assert!(!parser
+            .parse_from_str("oPtIoNaLgRoUp { a: 15 }", &mut proto)
+            .is_ok());
 
         parser.allow_case_insensitive_field(true);
-        assert!(parser.parse_from_str("Optional_Double: 10.0", &mut proto));
+        assert!(parser
+            .parse_from_str("Optional_Double: 10.0", &mut proto)
+            .is_ok());
         assert_eq!(
             *proto.get_field_by_name("optional_double").unwrap(),
             Value::F64(10.0)
         );
-        assert!(parser.parse_from_str("oPtIoNaLgRoUp { a: 15 }", &mut proto));
+        assert!(parser
+            .parse_from_str("oPtIoNaLgRoUp { a: 15 }", &mut proto)
+            .is_ok());
         assert_eq!(
             *proto
                 .get_field_by_name("optionalgroup")
@@ -3505,7 +3504,9 @@ repeated_nested_message <
         let mut message =
             DynamicMessage::new(protobuf_unittest::TestRequired::default().descriptor());
         let parser = Parser::new();
-        assert!(parser.merge_from_str("a: 1 b: 2 c: 3 a: 4", &mut message));
+        assert!(parser
+            .merge_from_str("a: 1 b: 2 c: 3 a: 4", &mut message)
+            .is_ok());
 
         let message = message
             .transcode_to::<protobuf_unittest::TestRequired>()
@@ -3518,7 +3519,7 @@ repeated_nested_message <
         let mut message =
             DynamicMessage::new(protobuf_unittest::ForeignMessage::default().descriptor());
         let parser = Parser::new();
-        assert!(parser.merge_from_str("c: 1 c: 2", &mut message));
+        assert!(parser.merge_from_str("c: 1 c: 2", &mut message).is_ok());
 
         let message = message
             .transcode_to::<protobuf_unittest::ForeignMessage>()
@@ -3530,7 +3531,7 @@ repeated_nested_message <
     fn explicit_delimiters() {
         let mut message =
             DynamicMessage::new(protobuf_unittest::TestRequired::default().descriptor());
-        assert!(parse_from_str("a:1,b:2,c:3", &mut message));
+        assert!(parse_from_str("a:1,b:2,c:3", &mut message).is_ok());
 
         let message = message
             .transcode_to::<protobuf_unittest::TestRequired>()
@@ -3638,7 +3639,7 @@ repeated_nested_message <
         let mut parser = Parser::new();
         parser.set_fineder(finder);
 
-        assert!(parser.parse_from_str(parse_string, &mut any));
+        assert!(parser.parse_from_str(parse_string, &mut any).is_ok());
     }
 
     #[test]
@@ -3651,7 +3652,7 @@ repeated_nested_message <
         let finder = Finder::from_descriptors(&[&crate::FILE_DESCRIPTOR]);
         let mut parser = Parser::new();
         parser.set_fineder(finder);
-        assert!(parser.parse_from_str(parse_string, &mut proto));
+        assert!(parser.parse_from_str(parse_string, &mut proto).is_ok());
     }
 
     #[test]
@@ -3669,7 +3670,7 @@ repeated_nested_message <
             repeated_nested_message     {\n  \
               bb: 5\n\
             }\n";
-        assert!(parse_from_str(parse_string, &mut proto));
+        assert!(parse_from_str(parse_string, &mut proto).is_ok());
     }
 
     #[test]
@@ -3691,34 +3692,61 @@ repeated_nested_message <
 
         let mut parser = Parser::new();
         parser.allow_unknown_field(true);
-        assert!(parser.parse_from_str(parse_string, &mut proto));
+        assert!(parser.parse_from_str(parse_string, &mut proto).is_ok());
     }
 
     #[test]
     fn test_unknown_field() {
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let mut parser = Parser::new();
-        assert!(!parser.parse_from_str("unknown_field: 12345", &mut proto));
-        assert!(!parser.parse_from_str("12345678: 12345", &mut proto));
+        assert!(!parser
+            .parse_from_str("unknown_field: 12345", &mut proto)
+            .is_ok());
+        assert!(!parser.parse_from_str("12345678: 12345", &mut proto).is_ok());
 
         parser.allow_unknown_field(true);
-        assert!(parser.parse_from_str("unknown_field: 12345", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: -12345", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: 1.2345", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: -1.2345", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: 1.2345f", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: -1.2345f", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: inf", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: -inf", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: TYPE_STRING", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: \"string value\"", &mut proto));
-        assert!(!parser.parse_from_str("unknown_field: -TYPE_STRING", &mut proto));
-        assert!(parser.parse_from_str(
-            "unknown_field: TYPE_STRING\nunknown_field2: 12345",
-            &mut proto
-        ));
-        assert!(parser.parse_from_str(
-            "unknown_message1: {}\n\
+        assert!(parser
+            .parse_from_str("unknown_field: 12345", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: -12345", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: 1.2345", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: -1.2345", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: 1.2345f", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: -1.2345f", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: inf", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: -inf", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: TYPE_STRING", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: \"string value\"", &mut proto)
+            .is_ok());
+        assert!(!parser
+            .parse_from_str("unknown_field: -TYPE_STRING", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str(
+                "unknown_field: TYPE_STRING\nunknown_field2: 12345",
+                &mut proto
+            )
+            .is_ok());
+        assert!(parser
+            .parse_from_str(
+                "unknown_message1: {}\n\
             unknown_message2 {\n\
               unknown_field: 12345\n\
             }\n\
@@ -3727,65 +3755,84 @@ repeated_nested_message <
                 unknown_field: 12345\n
               }\n\
             >",
-            &mut proto
-        ));
-        assert!(!parser.parse_from_str("unknown_message: {>", &mut proto));
-        assert!(parser.parse_from_str(
-            "optional_int32: 1\n\
+                &mut proto
+            )
+            .is_ok());
+        assert!(!parser
+            .parse_from_str("unknown_message: {>", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str(
+                "optional_int32: 1\n\
             unknown_field: 12345\n\
             optional_string: \"string\"\n\
             unknown_message { unknown: 0 }\n\
             optional_nested_message { bb: 2 }",
-            &mut proto
-        ));
+                &mut proto
+            )
+            .is_ok());
         let p = proto.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(1, p.optional_int32.unwrap());
         assert_eq!("string", &p.optional_string.unwrap());
         assert_eq!(2, p.optional_nested_message.unwrap().bb.unwrap());
 
-        assert!(parser.parse_from_str("12345678: 12345", &mut proto));
+        assert!(parser.parse_from_str("12345678: 12345", &mut proto).is_ok());
 
-        assert!(parser.parse_from_str(
-            "[test.extension1] <\n\
+        assert!(parser
+            .parse_from_str(
+                "[test.extension1] <\n\
               unknown_nested_message <\n\
                 [test.extension2] <\n\
                   unknown_field: 12345\n\
                 >\n\
               >\n\
             >",
-            &mut proto,
-        ));
+                &mut proto,
+            )
+            .is_ok());
 
-        assert!(parser.parse_from_str(
-            "[test.extension1] {\n\
+        assert!(parser
+            .parse_from_str(
+                "[test.extension1] {\n\
               unknown_nested_message {\n\
                 [test.extension2] {\n\
                   unknown_field: 12345\n\
                 }\n\
               }\n\
             }",
-            &mut proto,
-        ));
-        assert!(parser.parse_from_str(
-            "[test.extension1] <\n\
+                &mut proto,
+            )
+            .is_ok());
+        assert!(parser
+            .parse_from_str(
+                "[test.extension1] <\n\
               some_unknown_fields: <\n\
                 unknown_field: 12345\n\
               >\n\
             >",
-            &mut proto,
-        ));
-        assert!(parser.parse_from_str(
-            "[test.extension1] {\n\
+                &mut proto,
+            )
+            .is_ok());
+        assert!(parser
+            .parse_from_str(
+                "[test.extension1] {\n\
               some_unknown_fields: {\n\
                 unknown_field: 12345\n\
               }\n\
             }",
-            &mut proto,
-        ));
+                &mut proto,
+            )
+            .is_ok());
 
-        assert!(parser.parse_from_str("unknown_field: [1, 2]", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: [VAL1, VAL2]", &mut proto));
-        assert!(parser.parse_from_str("unknown_field: [{a:1}, <b:2>]", &mut proto));
+        assert!(parser
+            .parse_from_str("unknown_field: [1, 2]", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: [VAL1, VAL2]", &mut proto)
+            .is_ok());
+        assert!(parser
+            .parse_from_str("unknown_field: [{a:1}, <b:2>]", &mut proto)
+            .is_ok());
     }
 
     #[test]
@@ -3793,13 +3840,15 @@ repeated_nested_message <
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let mut parser = Parser::new();
         parser.allow_unknown_field(true);
-        assert!(parser.parse_from_str(
-            "unknown {\n\
+        assert!(parser
+            .parse_from_str(
+                "unknown {\n\
                 [type.googleapis.com/foo.bar] {\n\
                 }\n\
             }",
-            &mut proto,
-        ));
+                &mut proto,
+            )
+            .is_ok());
     }
 
     #[test]
@@ -3813,14 +3862,16 @@ repeated_nested_message <
                 }\n\
             }";
 
-        assert!(!parser.parse_from_str(message_with_ext, &mut proto));
+        assert!(!parser.parse_from_str(message_with_ext, &mut proto).is_ok());
         parser.allow_unknown_field(true);
-        assert!(parser.parse_from_str(message_with_ext, &mut proto));
+        assert!(parser.parse_from_str(message_with_ext, &mut proto).is_ok());
         parser.allow_unknown_field(false);
-        assert!(!parser.parse_from_str(message_with_ext, &mut proto));
+        assert!(!parser.parse_from_str(message_with_ext, &mut proto).is_ok());
         parser.allow_unknown_extension(true);
-        assert!(parser.parse_from_str(message_with_ext, &mut proto));
-        assert!(!parser.parse_from_str("unknown_field: 1", &mut proto));
+        assert!(parser.parse_from_str(message_with_ext, &mut proto).is_ok());
+        assert!(!parser
+            .parse_from_str("unknown_field: 1", &mut proto)
+            .is_ok());
     }
 
     #[test]
@@ -3832,7 +3883,7 @@ repeated_nested_message <
         ";
         let mut parser = Parser::new();
         parser.allow_field_number(true);
-        assert!(parser.parse_from_str(text, &mut proto));
+        assert!(parser.parse_from_str(text, &mut proto).is_ok());
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(&proto.repeated_uint64, &[1, 2]);
 
@@ -3847,7 +3898,7 @@ repeated_nested_message <
                     25: \"foo\"\n\
                 }\n\
             }\n";
-        assert!(parser.parse_from_str(text, &mut proto));
+        assert!(parser.parse_from_str(text, &mut proto).is_ok());
         let message = proto.get_field_by_name("message_set").unwrap();
         let message = message.as_message().unwrap();
         let ext1 = message
@@ -3888,10 +3939,10 @@ repeated_nested_message <
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         parser.allow_field_number(false);
         let text = "34:1\n";
-        assert!(!parser.parse_from_str(text, &mut proto));
+        assert!(!parser.parse_from_str(text, &mut proto).is_ok());
 
         parser.allow_field_number(true);
         let text = "1234:1\n";
-        assert!(!parser.parse_from_str(text, &mut proto));
+        assert!(!parser.parse_from_str(text, &mut proto).is_ok());
     }
 }
