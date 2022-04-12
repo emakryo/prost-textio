@@ -1154,5 +1154,3 @@ message TestExtensionRangeSerialize {
     optional int32 bar_five = 19;
   }
 }
-
-
