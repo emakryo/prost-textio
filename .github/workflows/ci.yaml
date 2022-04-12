@@ -11,6 +11,7 @@ jobs:
       - name: Setup toolchain
         uses: actions-rs/toolchain@v1
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Rust Cache
@@ -18,12 +19,35 @@ jobs:
 
       - name: Rustfmt
         uses: mbrobbel/rustfmt-check@0.3.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Clippy
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --tests
+
+  udeps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+
+      - name: Setup toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v1.3.0
+
+      - name: Install udeps
+        run: cargo install cargo-udeps
+
+      - name: Run udeps
+        run: cargo udeps
 
   tests:
     runs-on: ubuntu-latest
@@ -33,6 +57,8 @@ jobs:
 
       - name: Setup toolchain
         uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v1.3.0
@@ -56,11 +82,11 @@ jobs:
         uses: Swatinem/rust-cache@v1.3.0
 
       - name: Run tests
-        run: cargo test --no-fail-test
+        run: cargo test --no-fail-fast
         env:
           CARGO_INCREMENTAL: '0'
-          RUSTFLAGS: '-Zprofile -Ccodegen-unites=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
-          RUSTDOCFLAGS: '-Zprofile -Ccodegen-unites=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+          RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+          RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
 
       - name: Coverage
         uses: actions-rs/grcov@v0.1
