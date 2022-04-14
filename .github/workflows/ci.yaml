@@ -89,7 +89,10 @@ jobs:
           RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
 
       - name: Coverage
+        id: coverage
         uses: actions-rs/grcov@v0.1
 
       - name: Codecov
         uses: codecov/codecov-action@v3
+        with:
+          files: ${{ steps.coverage.outputs.report }}
