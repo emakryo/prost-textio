@@ -1,5 +1,6 @@
-use anyhow::{bail, Result};
-use std::{cell::RefCell, io::Read, rc::Rc};
+use std::{borrow::Cow, cell::RefCell, io::Read, rc::Rc};
+
+use crate::{Error, Result, TokenizeError};
 
 trait CharacterClass {
     fn is_in_class(c: u8) -> bool;
@@ -49,7 +50,11 @@ impl Default for Token {
 
 impl Token {
     pub fn str(&self) -> Result<&str> {
-        Ok(std::str::from_utf8(&self.text)?)
+        std::str::from_utf8(&self.text).map_err(|e| Error::Tokenize { err: e.into() })
+    }
+
+    pub fn str_lossy(&self) -> Cow<str> {
+        String::from_utf8_lossy(&self.text)
     }
 }
 
@@ -799,14 +804,16 @@ pub fn parse_integer(text: &[u8], max_value: u64) -> Result<u64> {
             base = 8;
         }
     }
-    let s = std::str::from_utf8(&text[idx..])?;
+    let s = std::str::from_utf8(&text[idx..]).map_err(|e| Error::Tokenize { err: e.into() })?;
 
-    let val = u64::from_str_radix(s, base)?;
+    let val = u64::from_str_radix(s, base).map_err(|e| Error::Tokenize { err: e.into() })?;
 
     if val <= max_value {
         Ok(val)
     } else {
-        bail!("TODO");
+        Err(Error::Tokenize {
+            err: TokenizeError::IntegerRangeExceeded(val),
+        })
     }
 }
 

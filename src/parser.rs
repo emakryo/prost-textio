@@ -1,6 +1,5 @@
 use std::{borrow::Cow, cell::RefCell, collections::HashMap, io::Read, rc::Rc};
 
-use anyhow::{anyhow, bail, Result};
 use prost::{bytes::Bytes, Message};
 use prost_reflect::{
     DynamicMessage, ExtensionDescriptor, FieldDescriptor, FileDescriptor, Kind, MessageDescriptor,
@@ -9,7 +8,9 @@ use prost_reflect::{
 use prost_types::FieldDescriptorProto;
 
 use crate::tokenizer::{parse_integer, parse_string_append, ErrorCollector, TokenType, Tokenizer};
+use crate::{Error, ParseError, Result};
 
+/// Parse or merge text format into dynamic message.
 #[derive(Clone)]
 pub struct Parser {
     opts: ParserOpts,
@@ -60,13 +61,11 @@ impl Parser {
 
         if !self.opts.allow_partial && !output.is_initialized() {
             let missing_fields = output.find_initialization_errors();
-            let msg = format!(
-                "Message missing required fields: {}",
-                missing_fields.join(",")
-            );
-
-            parser_impl.report_error_pos(0, 0, &msg);
-            bail!("{}", msg);
+            return Err(parser_impl.report_error_pos(
+                0,
+                0,
+                ParseError::Uninitialized(missing_fields),
+            ));
         }
         Ok(())
     }
@@ -98,6 +97,7 @@ impl Parser {
         self.error_collector = error_collector;
     }
 
+    #[cfg(test)]
     fn parse_field_value_from_string(
         &self,
         input: &str,
@@ -144,6 +144,7 @@ impl Parser {
     }
 }
 
+#[cfg(test)]
 pub fn parse_field_value_from_string(
     input: &str,
     field: &FieldDescriptor,
@@ -487,6 +488,7 @@ impl<'a, R: Read> ParserImpl<R> {
         }
     }
 
+    #[cfg(test)]
     fn parse_field(&mut self, field: &FieldDescriptor, message: &mut DynamicMessage) -> Result<()> {
         if let Kind::Message(_) = field.kind() {
             self.consume_field_message(message, &field.to_owned().into())?
@@ -495,16 +497,23 @@ impl<'a, R: Read> ParserImpl<R> {
         };
 
         if !self.looking_at_type(TokenType::Eof) {
-            bail!("Remaining tokens");
+            let current = self.tokenizer.current();
+            return Err(Error::Parse {
+                line: current.line,
+                column: current.column,
+                err: ParseError::RemainingToken,
+            });
         }
         Ok(())
     }
 
-    fn report_error_pos(&mut self, line: usize, column: usize, message: &str) {
+    fn report_error_pos(&mut self, line: usize, column: usize, err: ParseError) -> Error {
         self.had_errors = true;
         self.error_collector
             .borrow_mut()
-            .add_error(line, column, message);
+            .add_error(line, column, &err.to_string());
+
+        Error::Parse { line, column, err }
     }
 
     fn report_warning_pos(&mut self, line: usize, col: usize, message: &str) {
@@ -513,12 +522,12 @@ impl<'a, R: Read> ParserImpl<R> {
             .add_warning(line, col, message);
     }
 
-    fn report_error(&mut self, message: &str) {
+    fn report_error(&mut self, err: ParseError) -> Error {
         self.report_error_pos(
             self.tokenizer.current().line,
             self.tokenizer.current().column,
-            message,
-        );
+            err,
+        )
     }
 
     fn report_warning(&mut self, message: &str) {
@@ -539,7 +548,7 @@ impl<'a, R: Read> ParserImpl<R> {
     }
 
     fn consume_message_delimiter(&mut self) -> Result<String> {
-        if self.try_consume("<").is_ok() {
+        if self.try_consume("<") {
             Ok(">".into())
         } else {
             self.consume("{")?;
@@ -549,11 +558,9 @@ impl<'a, R: Read> ParserImpl<R> {
 
     fn decrease_recursion_limit(&mut self) -> Result<()> {
         if self.opts.recursion_limit == 0 {
-            self.report_error(&format!(
-                "Message is too deep, the parser exceeded the configured recursion limit of {}.",
-                self.init_recursion_limit
-            ));
-            bail!("Recursion limit exceeded");
+            return Err(
+                self.report_error(ParseError::ExceedRecursionLimit(self.init_recursion_limit))
+            );
         }
         self.opts.recursion_limit -= 1;
         Ok(())
@@ -569,21 +576,23 @@ impl<'a, R: Read> ParserImpl<R> {
         let start_column = self.tokenizer.current().column;
 
         if let Some((any_type_url_field, any_value_field)) = get_any_field_descriptors(message) {
-            if self.try_consume("[").is_ok() {
+            if self.try_consume("[") {
                 let (full_type_name, prefix) = self.consume_any_type_url()?;
                 let mut prefix_and_full_type_name: String = prefix.clone();
                 prefix_and_full_type_name.push_str(&full_type_name);
                 self.consume_before_whitespace("]")?;
-                self.try_consume_whitespace(&prefix_and_full_type_name, "Any")
-                    .ok();
-                self.try_consume_before_whitespace(":").ok();
-                self.try_consume_whitespace(&prefix_and_full_type_name, "Any")
-                    .ok();
+                self.try_consume_whitespace(&prefix_and_full_type_name, "Any");
+                self.try_consume_before_whitespace(":");
+                self.try_consume_whitespace(&prefix_and_full_type_name, "Any");
 
                 let value_descriptor = self
                     .finder
                     .find_any_type(message, &prefix, &full_type_name)
-                    .ok_or_else(|| anyhow!("Any type not found"))?;
+                    .ok_or_else(|| Error::Parse {
+                        line: self.tokenizer.current().line,
+                        column: self.tokenizer.current().column,
+                        err: ParseError::UnknownAny,
+                    })?;
 
                 let serialized_value = self.consume_any_value(&value_descriptor)?;
 
@@ -591,8 +600,7 @@ impl<'a, R: Read> ParserImpl<R> {
                     && ((!any_type_url_field.is_list() && message.has_field(&any_type_url_field))
                         || (!any_value_field.is_list() && message.has_field(&any_value_field)))
                 {
-                    self.report_error("Non repeated Any specified multiple times");
-                    bail!("Duplicated Any");
+                    return Err(self.report_error(ParseError::DuplicatedAny));
                 }
 
                 message.set_field(
@@ -606,11 +614,10 @@ impl<'a, R: Read> ParserImpl<R> {
                 return Ok(());
             }
         }
-        if self.try_consume("[").is_ok() {
+        if self.try_consume("[") {
             field_name = self.consume_full_type_name()?;
             self.consume_before_whitespace("]")?;
-            self.try_consume_whitespace(descriptor.full_name(), "Extension")
-                .ok();
+            self.try_consume_whitespace(descriptor.full_name(), "Extension");
 
             field = self
                 .finder
@@ -619,12 +626,10 @@ impl<'a, R: Read> ParserImpl<R> {
 
             if field.is_none() {
                 if !self.opts.allow_unknown_field && !self.opts.allow_unknown_extension {
-                    self.report_error(&format!(
-                        "Extension \"{}\" is not defined or is not an extension of \"{}\".",
+                    return Err(self.report_error(ParseError::UnknownExtension(
                         field_name,
-                        descriptor.full_name(),
-                    ));
-                    bail!("Unknown extension");
+                        descriptor.full_name().to_owned(),
+                    )));
                 } else {
                     self.report_warning(&format!(
                         "Ignore extension {} which is not defined or is not an extension of {}.",
@@ -635,8 +640,7 @@ impl<'a, R: Read> ParserImpl<R> {
             }
         } else {
             field_name = self.consume_identifier_before_whitespace()?;
-            self.try_consume_whitespace(descriptor.full_name(), "Normal")
-                .ok();
+            self.try_consume_whitespace(descriptor.full_name(), "Normal");
 
             if let (Ok(field_number), true) =
                 (field_name.parse::<u32>(), self.opts.allow_field_number)
@@ -686,15 +690,17 @@ impl<'a, R: Read> ParserImpl<R> {
             }
 
             if field.is_none() && !reserved_field {
-                let msg = format!(
-                    "Message type \"{}\" has no field named \"{}\".",
-                    descriptor.full_name(),
-                    field_name,
-                );
                 if !self.opts.allow_unknown_field {
-                    self.report_error(&msg);
-                    bail!("Unknown field");
+                    return Err(self.report_error(ParseError::UnknownField(
+                        descriptor.full_name().to_owned(),
+                        field_name,
+                    )));
                 } else {
+                    let msg = format!(
+                        "Message type \"{}\" has no field named \"{}\".",
+                        descriptor.full_name(),
+                        field_name,
+                    );
                     self.report_warning(&msg);
                 }
             }
@@ -707,9 +713,8 @@ impl<'a, R: Read> ParserImpl<R> {
                     || reserved_field
             );
 
-            if self.try_consume_before_whitespace(":").is_ok() {
-                self.try_consume_whitespace(descriptor.full_name(), "Unknown/Reserved")
-                    .ok();
+            if self.try_consume_before_whitespace(":") {
+                self.try_consume_whitespace(descriptor.full_name(), "Unknown/Reserved");
                 if !self.looking_at("{") && !self.looking_at("<") {
                     return self.skip_field_value();
                 }
@@ -722,20 +727,16 @@ impl<'a, R: Read> ParserImpl<R> {
 
         if self.opts.singular_overwrite_policy == SingularOverwritePolicy::Forbid {
             if !field.is_list() && field.belongs_to(message) {
-                self.report_error(&format!(
-                    "Non-repeated field \"{}\" is specified multiple times.",
-                    field_name,
-                ));
-                bail!("Duplicated field");
+                return Err(self.report_error(ParseError::DuplicatedField(field_name)));
             }
             if let Some(oneof) = field.containing_oneof() {
                 if message.has_oneof(&oneof) {
                     if let Some(other_field) = message.get_oneof_field_descriptor(&oneof) {
-                        self.report_error(&format!(
-                            "Field '{}' is specified along with field '{}', another member of oneof '{}'.",
-                            &field_name, other_field.name(), oneof.name()
-                        ));
-                        bail!("Duplicaed oneof");
+                        return Err(self.report_error(ParseError::DuplicaedOneOf(
+                            field_name,
+                            other_field.name().to_owned(),
+                            oneof.name().to_owned(),
+                        )));
                     }
                 }
             }
@@ -743,9 +744,8 @@ impl<'a, R: Read> ParserImpl<R> {
 
         (|| -> Result<()> {
             if let Kind::Message(_) = field.kind() {
-                let consumed_semicolon = self.try_consume_before_whitespace(":").is_ok();
-                self.try_consume_whitespace(descriptor.full_name(), "Normal")
-                    .ok();
+                let consumed_semicolon = self.try_consume_before_whitespace(":");
+                self.try_consume_whitespace(descriptor.full_name(), "Normal");
                 let options = &field.field_descriptor_proto().options;
                 let is_weak = options.as_ref().map(|opt| opt.weak()).unwrap_or(false);
                 if consumed_semicolon && is_weak && self.looking_at_type(TokenType::String) {
@@ -754,18 +754,22 @@ impl<'a, R: Read> ParserImpl<R> {
                         .mut_value_of(message)
                         .as_message_mut()
                         .unwrap()
-                        .merge(tmp.as_bytes())?;
+                        .merge(tmp.as_bytes())
+                        .map_err(|e| Error::Parse {
+                            line: self.tokenizer.current().line,
+                            column: self.tokenizer.current().column,
+                            err: e.into(),
+                        })?;
 
                     return Ok(());
                 }
             } else {
                 self.consume_before_whitespace(":")?;
-                self.try_consume_whitespace(descriptor.full_name(), "Normal")
-                    .ok();
+                self.try_consume_whitespace(descriptor.full_name(), "Normal");
             }
 
-            if field.is_list() && self.try_consume("[").is_ok() {
-                if self.try_consume("]").is_err() {
+            if field.is_list() && self.try_consume("[") {
+                if !self.try_consume("]") {
                     loop {
                         if let Kind::Message(_) = field.kind() {
                             self.consume_field_message(message, &field)?;
@@ -773,7 +777,7 @@ impl<'a, R: Read> ParserImpl<R> {
                             self.consume_field_value(message, &field)?;
                         }
 
-                        if self.try_consume("]").is_ok() {
+                        if self.try_consume("]") {
                             break;
                         }
                         self.consume(",")?
@@ -787,7 +791,7 @@ impl<'a, R: Read> ParserImpl<R> {
             Ok(())
         })()?;
 
-        let _ = self.try_consume(";").is_ok() || self.try_consume(",").is_ok();
+        let _ = self.try_consume(";") || self.try_consume(",");
 
         if field
             .field_descriptor_proto()
@@ -825,17 +829,17 @@ impl<'a, R: Read> ParserImpl<R> {
     }
 
     fn skip_field(&mut self) -> Result<()> {
-        if self.try_consume("[").is_ok() {
+        if self.try_consume("[") {
             self.consume_type_url_or_full_type_name()?;
             self.consume_before_whitespace("]")?;
         } else {
             self.consume_identifier_before_whitespace()?;
         }
 
-        self.try_consume_whitespace("Unkown/Reserved", "n/a").ok();
+        self.try_consume_whitespace("Unkown/Reserved", "n/a");
 
-        if self.try_consume_before_whitespace(":").is_ok() {
-            self.try_consume_whitespace("Unknown/Reserved", "n/a").ok();
+        if self.try_consume_before_whitespace(":") {
+            self.try_consume_whitespace("Unknown/Reserved", "n/a");
             if !self.looking_at("{") & !self.looking_at("<") {
                 self.skip_field_value()?;
             } else {
@@ -845,7 +849,7 @@ impl<'a, R: Read> ParserImpl<R> {
             self.skip_field_message()?;
         }
 
-        let _ = self.try_consume(";").is_ok() || self.try_consume(",").is_ok();
+        let _ = self.try_consume(";") || self.try_consume(",");
         Ok(())
     }
 
@@ -866,15 +870,11 @@ impl<'a, R: Read> ParserImpl<R> {
         }
 
         let delimiter = self.consume_message_delimiter()?;
-        if field.is_list() {
-            let list = field
-                .mut_value_of(message)
-                .as_list_mut()
-                .ok_or_else(|| anyhow!("TODO"))?;
+        if let Some(list) = field.mut_value_of(message).as_list_mut() {
             if let Kind::Message(m) = field.kind() {
                 list.push(Value::Message(DynamicMessage::new(m)));
             } else {
-                bail!("Field type is not message");
+                panic!();
             }
             self.consume_message(
                 list.last_mut().unwrap().as_message_mut().unwrap(),
@@ -884,7 +884,7 @@ impl<'a, R: Read> ParserImpl<R> {
             let mut inner = if let Kind::Message(m) = field.kind() {
                 DynamicMessage::new(m)
             } else {
-                bail!("TODO");
+                panic!();
             };
             self.consume_message(&mut inner, &delimiter)?;
             field.set_into(Value::Message(inner), message);
@@ -957,12 +957,10 @@ impl<'a, R: Read> ParserImpl<R> {
                     } else if value == "false" || value == "False" || value == "f" {
                         message.set_bool(false, field)?;
                     } else {
-                        self.report_error(&format!(
-                            "Invalid value for boolean field \"{}\". Value: \"{}\".",
-                            field.name(),
-                            &value,
-                        ));
-                        bail!("Invalid value for bool");
+                        return Err(self.report_error(ParseError::InvalidBool(
+                            field.name().to_owned(),
+                            value,
+                        )));
                     }
                 }
             }
@@ -979,23 +977,19 @@ impl<'a, R: Read> ParserImpl<R> {
                     value = v.to_string();
                     int_value = Some(v);
                 } else {
-                    self.report_error(&format!(
-                        "Expected integer or identifier, got: {}",
-                        String::from_utf8_lossy(&self.tokenizer.current().text),
-                    ));
-                    bail!("Invalid value in enum");
+                    return Err(self.report_error(ParseError::InvalidEnum(
+                        String::from_utf8_lossy(&self.tokenizer.current().text).to_string(),
+                    )));
                 }
 
                 if enum_value.is_none() {
                     if int_value.is_some() && message.supports_unknown_enum() {
                         message.set_enum(int_value.unwrap(), field)?;
                     } else if !self.opts.allow_unknown_enum {
-                        self.report_error(&format!(
-                            "Unknown enumeration value of \"{}\" for field \"{}\".",
+                        return Err(self.report_error(ParseError::UnknwonEnumValue(
                             value,
-                            field.name(),
-                        ));
-                        bail!("Unknown enum value");
+                            field.name().to_string(),
+                        )));
                     } else {
                         self.report_warning(&format!(
                             "Unknown enumeration value of \"{}\" for field \"{}\".",
@@ -1028,14 +1022,14 @@ impl<'a, R: Read> ParserImpl<R> {
             return Ok(());
         }
 
-        if self.try_consume("[").is_ok() {
+        if self.try_consume("[") {
             loop {
                 if !self.looking_at("{") && !self.looking_at("<") {
                     self.skip_field_value()?;
                 } else {
                     self.skip_field_message()?;
                 }
-                if self.try_consume("]").is_ok() {
+                if self.try_consume("]") {
                     break;
                 }
                 self.consume(",")?;
@@ -1044,29 +1038,24 @@ impl<'a, R: Read> ParserImpl<R> {
             return Ok(());
         }
 
-        let has_minus = self.try_consume("-").is_ok();
+        let has_minus = self.try_consume("-");
         if !self.looking_at_type(TokenType::Integer)
             && !self.looking_at_type(TokenType::Float)
             && !self.looking_at_type(TokenType::Ident)
         {
             let text = self.tokenizer.current().str()?.to_string();
-            self.report_error(&format!(
-                "Cannot skip field value, unexpected token: {}",
-                text
-            ));
             self.opts.recursion_limit += 1;
-            bail!("Unexpected token while skipping");
+            return Err(self.report_error(ParseError::InvalidFieldValue(text)));
         }
 
         if has_minus && self.looking_at_type(TokenType::Ident) {
             let text = self.tokenizer.current().text.to_ascii_lowercase();
             if &text != b"inf" && &text != b"infinity" && text != b"nan" {
-                self.report_error(&format!(
-                    "Invalid float number: {}",
-                    String::from_utf8_lossy(&text),
-                ));
                 self.opts.recursion_limit += 1;
-                bail!("Invalid float number");
+                return Err(self.report_error(ParseError::InvalidFieldValue(format!(
+                    "-{}",
+                    String::from_utf8_lossy(&text)
+                ))));
             }
         }
 
@@ -1100,11 +1089,9 @@ impl<'a, R: Read> ParserImpl<R> {
             return Ok(ret);
         }
 
-        self.report_error(&format!(
-            "Expected identifier, got: {}",
-            String::from_utf8_lossy(&self.tokenizer.current().text),
-        ));
-        bail!("Failed consume identifier")
+        return Err(self.report_error(ParseError::InvalidIdentifier(
+            String::from_utf8_lossy(&self.tokenizer.current().text).to_string(),
+        )));
     }
 
     fn consume_identifier_before_whitespace(&mut self) -> Result<String> {
@@ -1116,7 +1103,7 @@ impl<'a, R: Read> ParserImpl<R> {
 
     fn consume_full_type_name(&mut self) -> Result<String> {
         let mut name = self.consume_identifier()?;
-        while self.try_consume(".").is_ok() {
+        while self.try_consume(".") {
             let part = self.consume_identifier()?;
             name.push('.');
             name.push_str(&part);
@@ -1126,7 +1113,7 @@ impl<'a, R: Read> ParserImpl<R> {
 
     fn consume_type_url_or_full_type_name(&mut self) -> Result<()> {
         self.consume_identifier()?;
-        while self.try_consume(".").is_ok() || self.try_consume("/").is_ok() {
+        while self.try_consume(".") || self.try_consume("/") {
             self.consume_identifier()?;
         }
         Ok(())
@@ -1134,11 +1121,9 @@ impl<'a, R: Read> ParserImpl<R> {
 
     fn consume_string(&mut self) -> Result<String> {
         if !self.looking_at_type(TokenType::String) {
-            self.report_error(&format!(
-                "Expected string, got: {}",
-                String::from_utf8_lossy(&self.tokenizer.current().text),
-            ));
-            bail!("Failed consume string");
+            return Err(self.report_error(ParseError::InvalidString(
+                self.tokenizer.current().str_lossy().to_string(),
+            )));
         }
 
         let mut text = String::new();
@@ -1151,28 +1136,34 @@ impl<'a, R: Read> ParserImpl<R> {
 
     fn consume_unsigned_integer(&mut self, max_value: u64) -> Result<u64> {
         if !self.looking_at_type(TokenType::Integer) {
-            self.report_error(&format!(
-                "Expected integer, got: {}",
-                String::from_utf8_lossy(&self.tokenizer.current().text),
-            ));
-            bail!("Faield consume integer");
+            return Err(self.report_error(ParseError::InvalidUnsignedInteger(
+                self.tokenizer.current().str_lossy().to_string(),
+            )));
         }
 
-        if let Ok(value) = parse_integer(&self.tokenizer.current().text, max_value) {
-            self.tokenizer.next();
-            Ok(value)
-        } else {
-            self.report_error(&format!(
-                "Integer out of range ({})",
-                self.tokenizer.current().str().unwrap()
-            ));
-            bail!("TODO");
-        }
+        let ret = parse_integer(&self.tokenizer.current().text, max_value).map_err(|_| {
+            self.report_error(ParseError::IntegerRangeExceeded(
+                self.tokenizer.current().str_lossy().to_string(),
+            ))
+        })?;
+        self.tokenizer.next();
+        Ok(ret)
+
+        // if let Ok(value) = parse_integer(&self.tokenizer.current().text, max_value) {
+        //     self.tokenizer.next();
+        //     Ok(value)
+        // } else {
+        //     self.report_error(&format!(
+        //         "Integer out of range ({})",
+        //         self.tokenizer.current().str().unwrap()
+        //     ));
+        //     bail!("TODO");
+        // }
     }
 
     fn consume_signed_integer(&mut self, mut max_value: u64) -> Result<i64> {
         let mut negative = false;
-        if self.try_consume("-").is_ok() {
+        if self.try_consume("-") {
             negative = true;
             max_value += 1;
         }
@@ -1192,23 +1183,21 @@ impl<'a, R: Read> ParserImpl<R> {
 
     fn consume_unsigned_decimal_as_double(&mut self, _max_value: u64) -> Result<f64> {
         if !self.looking_at_type(TokenType::Integer) {
-            self.report_error(&format!(
-                "Expected integer, got: {}",
-                self.tokenizer.current().str()?
-            ));
-            bail!("Faild to parse double");
+            return Err(self.report_error(ParseError::InvalidUnsignedInteger(
+                self.tokenizer.current().str_lossy().to_string(),
+            )));
         }
 
         let text = self.tokenizer.current().str()?;
         if is_hex_number(text) || is_oct_number(text) {
-            self.report_error(&format!(
-                "Expected decimal number, got {}",
-                self.tokenizer.current().str()?
-            ));
-            bail!("Faild to parse double");
+            return Err(self.report_error(ParseError::NonDecimalAsDouble(
+                self.tokenizer.current().str_lossy().to_string(),
+            )));
         }
 
-        let value = text.parse::<f64>()?;
+        let value = text
+            .parse::<f64>()
+            .map_err(|e| Error::Tokenize { err: e.into() })?;
 
         self.tokenizer.next();
         Ok(value)
@@ -1216,7 +1205,7 @@ impl<'a, R: Read> ParserImpl<R> {
 
     fn consume_double(&mut self) -> Result<f64> {
         let mut negative = false;
-        if self.try_consume("-").is_ok() {
+        if self.try_consume("-") {
             negative = true;
         }
 
@@ -1228,7 +1217,9 @@ impl<'a, R: Read> ParserImpl<R> {
             if last == "f" || last == "F" {
                 text = &text[..text.len() - 1];
             }
-            let v = text.parse::<f64>()?;
+            let v = text
+                .parse::<f64>()
+                .map_err(|e| Error::Tokenize { err: e.into() })?;
             self.tokenizer.next();
             v
         } else if self.looking_at_type(TokenType::Ident) {
@@ -1241,16 +1232,13 @@ impl<'a, R: Read> ParserImpl<R> {
                 v = f64::NAN;
                 self.tokenizer.next();
             } else {
-                self.report_error(&format!("Expected double, got: {}", text));
-                bail!("Failed to consume double");
+                return Err(self.report_error(ParseError::InvalidDouble(text)));
             }
             v
         } else {
-            self.report_error(&format!(
-                "Expected double, got: {}",
-                self.tokenizer.current().str()?,
-            ));
-            bail!("Failed to consume double");
+            return Err(self.report_error(ParseError::InvalidDouble(
+                self.tokenizer.current().str_lossy().to_string(),
+            )));
         };
 
         if negative {
@@ -1262,7 +1250,7 @@ impl<'a, R: Read> ParserImpl<R> {
 
     fn consume_any_type_url(&mut self) -> Result<(String, String)> {
         let mut prefix = self.consume_identifier()?;
-        while self.try_consume(".").is_ok() {
+        while self.try_consume(".") {
             let url = self.consume_identifier()?;
             prefix.push('.');
             prefix.push_str(&url);
@@ -1284,8 +1272,9 @@ impl<'a, R: Read> ParserImpl<R> {
             value.encode_to_vec()
         } else {
             if !value.is_initialized() {
-                self.report_error("Value of type \"{}\" stored in google.protobuf.Any has missing required fields");
-                bail!("TODO");
+                return Err(self.report_error(ParseError::MissingInAny(
+                    value_descriptor.full_name().to_string(),
+                )));
             }
             value.encode_to_vec()
         };
@@ -1294,16 +1283,13 @@ impl<'a, R: Read> ParserImpl<R> {
     }
 
     fn consume(&mut self, value: &str) -> Result<()> {
-        let current_value = &self.tokenizer.current().text;
+        let current_value = self.tokenizer.current().str()?;
 
-        if current_value != value.as_bytes() {
-            let msg = format!(
-                "Expected \"{}\", found \"{}\".",
-                value,
-                std::str::from_utf8(current_value).unwrap()
+        if current_value != value {
+            let current_value = current_value.to_string();
+            return Err(
+                self.report_error(ParseError::InvalidToken(value.to_string(), current_value))
             );
-            self.report_error(&msg);
-            bail!("{}", msg);
         }
 
         self.tokenizer.next();
@@ -1317,28 +1303,28 @@ impl<'a, R: Read> ParserImpl<R> {
         result
     }
 
-    fn try_consume(&mut self, value: &str) -> Result<()> {
-        if self.tokenizer.current().text == value.as_bytes() {
+    fn try_consume(&mut self, value: &str) -> bool {
+        if self.tokenizer.current().str_lossy().as_ref() == value {
             self.tokenizer.next();
-            Ok(())
+            true
         } else {
-            bail!("TODO");
+            false
         }
     }
 
-    fn try_consume_before_whitespace(&mut self, value: &str) -> Result<()> {
+    fn try_consume_before_whitespace(&mut self, value: &str) -> bool {
         self.tokenizer.set_report_whitespaces(true);
         let result = self.try_consume(value);
         self.tokenizer.set_report_whitespaces(false);
         result
     }
 
-    fn try_consume_whitespace(&mut self, _message_type: &str, _field_type: &str) -> Result<()> {
+    fn try_consume_whitespace(&mut self, _message_type: &str, _field_type: &str) -> bool {
         if self.looking_at_type(TokenType::Whitespace) {
             self.tokenizer.next();
-            Ok(())
+            true
         } else {
-            bail!("TODO");
+            false
         }
     }
 }
@@ -1724,11 +1710,13 @@ impl FieldDescriptorExt for FieldDescriptor {
     }
 }
 
+/// Parse input reader into `DynamicMessage`
 pub fn parse<R: Read>(input: R, output: &mut DynamicMessage) -> Result<()> {
     let parser = Parser::new();
     parser.parse(input, output)
 }
 
+/// Parse `&str` into `DynamicMessage`
 pub fn parse_from_str(input: &str, output: &mut DynamicMessage) -> Result<()> {
     parse(input.as_bytes(), output)
 }
@@ -2775,7 +2763,7 @@ mod tests {
 
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
-        assert!(parse_from_str(parse_string, &mut proto).is_ok());
+        assert!(dbg!(parse_from_str(parse_string, &mut proto)).is_ok());
 
         let proto = proto.transcode_to::<TestAllTypes>().unwrap();
         assert_eq!(3, proto.repeated_int32.len());
