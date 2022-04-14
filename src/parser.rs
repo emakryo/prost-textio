@@ -1800,8 +1800,21 @@ mod tests {
         col: usize,
         proto: &mut DynamicMessage,
     ) {
-        let mut parser = Parser::new();
-        expect_message(&mut parser, input, message, line, col, proto, false);
+        let parser = Parser::new();
+        let result = parser.parse_from_str(input, proto);
+
+        if let Err(Error::Parse {
+            line: line_actual,
+            column: col_actual,
+            err,
+        }) = result
+        {
+            assert_eq!(line, line_actual + 1);
+            assert_eq!(col, col_actual + 1);
+            assert_eq!(message, &err.to_string());
+        } else {
+            panic!("Unexpected result: {:?}", result);
+        }
     }
 
     fn expect_message(
@@ -2710,15 +2723,15 @@ mod tests {
     fn parse_short_repeated_with_trailing_comma() {
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let parse_string = "repeated_int32: [456,]\n";
-        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
+        assert!(parse_from_str(parse_string, &mut proto).is_err());
         let parse_string = "repeated_nested_enum: [ FOO , ]";
-        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
+        assert!(parse_from_str(parse_string, &mut proto).is_err());
         let parse_string = "repeated_string: [ \"foo\", ]";
-        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
+        assert!(parse_from_str(parse_string, &mut proto).is_err());
         let parse_string = "repeated_nested_message: [ { bb: 1 }, ]";
-        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
+        assert!(parse_from_str(parse_string, &mut proto).is_err());
         let parse_string = "RepeatedGroup [{ a: 3 },]\n";
-        assert!(!parse_from_str(parse_string, &mut proto).is_ok());
+        assert!(parse_from_str(parse_string, &mut proto).is_err());
     }
 
     #[test]
@@ -3198,12 +3211,12 @@ repeated_nested_message <
         let mut parser = Parser::new();
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
 
-        assert!(!parser
+        assert!(parser
             .parse_from_str("Optional_Double: 10.0", &mut proto)
-            .is_ok());
-        assert!(!parser
+            .is_err());
+        assert!(parser
             .parse_from_str("oPtIoNaLgRoUp { a: 15 }", &mut proto)
-            .is_ok());
+            .is_err());
 
         parser.allow_case_insensitive_field(true);
         assert!(parser
@@ -3687,10 +3700,12 @@ repeated_nested_message <
     fn test_unknown_field() {
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         let mut parser = Parser::new();
-        assert!(!parser
+        assert!(parser
             .parse_from_str("unknown_field: 12345", &mut proto)
-            .is_ok());
-        assert!(!parser.parse_from_str("12345678: 12345", &mut proto).is_ok());
+            .is_err());
+        assert!(parser
+            .parse_from_str("12345678: 12345", &mut proto)
+            .is_err());
 
         parser.allow_unknown_field(true);
         assert!(parser
@@ -3723,9 +3738,9 @@ repeated_nested_message <
         assert!(parser
             .parse_from_str("unknown_field: \"string value\"", &mut proto)
             .is_ok());
-        assert!(!parser
+        assert!(parser
             .parse_from_str("unknown_field: -TYPE_STRING", &mut proto)
-            .is_ok());
+            .is_err());
         assert!(parser
             .parse_from_str(
                 "unknown_field: TYPE_STRING\nunknown_field2: 12345",
@@ -3746,9 +3761,9 @@ repeated_nested_message <
                 &mut proto
             )
             .is_ok());
-        assert!(!parser
+        assert!(parser
             .parse_from_str("unknown_message: {>", &mut proto)
-            .is_ok());
+            .is_err());
         assert!(parser
             .parse_from_str(
                 "optional_int32: 1\n\
@@ -3850,16 +3865,16 @@ repeated_nested_message <
                 }\n\
             }";
 
-        assert!(!parser.parse_from_str(message_with_ext, &mut proto).is_ok());
+        assert!(parser.parse_from_str(message_with_ext, &mut proto).is_err());
         parser.allow_unknown_field(true);
         assert!(parser.parse_from_str(message_with_ext, &mut proto).is_ok());
         parser.allow_unknown_field(false);
-        assert!(!parser.parse_from_str(message_with_ext, &mut proto).is_ok());
+        assert!(parser.parse_from_str(message_with_ext, &mut proto).is_err());
         parser.allow_unknown_extension(true);
         assert!(parser.parse_from_str(message_with_ext, &mut proto).is_ok());
-        assert!(!parser
+        assert!(parser
             .parse_from_str("unknown_field: 1", &mut proto)
-            .is_ok());
+            .is_err());
     }
 
     #[test]
@@ -3927,10 +3942,10 @@ repeated_nested_message <
         let mut proto = DynamicMessage::new(TestAllTypes::default().descriptor());
         parser.allow_field_number(false);
         let text = "34:1\n";
-        assert!(!parser.parse_from_str(text, &mut proto).is_ok());
+        assert!(parser.parse_from_str(text, &mut proto).is_err());
 
         parser.allow_field_number(true);
         let text = "1234:1\n";
-        assert!(!parser.parse_from_str(text, &mut proto).is_ok());
+        assert!(parser.parse_from_str(text, &mut proto).is_err());
     }
 }
