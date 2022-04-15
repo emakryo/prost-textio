@@ -59,8 +59,8 @@
 //!     // Parse from str
 //!     let mut proto = DynamicMessage::new(example::Sample::default().descriptor());
 //!     prost_textio::parse_from_str(r#"
-//! a: 1
-//! b: "foo"
+//!         a: 1
+//!         b: "foo"
 //!     "#, &mut proto).unwrap();
 //!     assert_eq!(proto.a, 1);
 //!     assert_eq!(&proto.b, "foo");
@@ -81,6 +81,7 @@ pub use parser::{parse, parse_from_str, Parser};
 
 use thiserror::Error as ThisError;
 
+/// Public error type.
 #[derive(Debug, ThisError)]
 pub enum Error {
     #[error("IO Error")]
@@ -95,10 +96,9 @@ pub enum Error {
     Tokenize { err: TokenizeError },
     #[error("Unhandled error")]
     Todo(String),
-    #[error("End of file")]
-    Eof,
 }
 
+/// Error in tokenization.
 #[derive(Debug, ThisError)]
 pub enum TokenizeError {
     #[error("Non UTF-8 text: {}", .0)]
@@ -111,6 +111,7 @@ pub enum TokenizeError {
     ParseFloat(#[from] std::num::ParseFloatError),
 }
 
+/// Error in parsing.
 #[derive(Debug, ThisError)]
 pub enum ParseError {
     #[error("Message missing required fields: {}", .0.join(","))]
@@ -159,4 +160,5 @@ pub enum ParseError {
     IntegerRangeExceeded(String),
 }
 
+/// Convenient alias of `std::result::Result<T, Error>`
 pub type Result<T> = std::result::Result<T, Error>;
