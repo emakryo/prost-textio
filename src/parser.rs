@@ -7,9 +7,9 @@ use prost_reflect::{
 };
 use prost_types::FieldDescriptorProto;
 
+use crate::finder::Finder;
 use crate::tokenizer::{parse_integer, parse_string_append, ErrorCollector, TokenType, Tokenizer};
 use crate::{Error, ParseError, Result};
-use crate::finder::Finder;
 
 /// Parse or merge text format into dynamic message.
 #[derive(Clone)]
@@ -159,7 +159,6 @@ enum SingularOverwritePolicy {
     Allow,
     Forbid,
 }
-
 
 #[derive(Clone, Default)]
 pub struct ParseInfoTree {

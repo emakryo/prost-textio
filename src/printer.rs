@@ -1,8 +1,17 @@
-use std::{io::{Write, Cursor}, collections::HashMap, hash::{Hash, Hasher}, any::Any, marker::PhantomData, rc::Rc};
+use std::{
+    any::Any,
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    io::{Cursor, Write},
+    marker::PhantomData,
+    rc::Rc,
+};
 
-use prost_reflect::{DynamicMessage, FieldDescriptor, MessageDescriptor, ReflectMessage, OneofDescriptor};
-use prost_types::{FileDescriptorSet, FieldDescriptorProto, DescriptorProto};
-use crate::{Error, Result, finder::Finder};
+use crate::{finder::Finder, Error, Result};
+use prost_reflect::{
+    DynamicMessage, FieldDescriptor, MessageDescriptor, OneofDescriptor, ReflectMessage,
+};
+use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorSet};
 
 const DEBUG_STRING_SILENT_MARKER: &str = "\t ";
 
@@ -20,8 +29,6 @@ impl OneofDescriptorExt for OneofDescriptor {
         }
     }
 }
-
-
 
 fn in_real_oneof(field: &FieldDescriptor) -> bool {
     field
@@ -46,7 +53,6 @@ trait BaseTextGenerator {
     }
 }
 
-
 struct TextGenerator<W> {
     output: W,
     buffer: (),
@@ -58,7 +64,7 @@ struct TextGenerator<W> {
     initial_indent_level: usize,
 }
 
-impl<W:Write> TextGenerator<W> {
+impl<W: Write> TextGenerator<W> {
     fn new(output: W, insert_silent_marker: bool, initial_indent_level: usize) -> Self {
         Self {
             output,
@@ -130,21 +136,15 @@ pub struct Printer {
     custom_message_printers: HashMap<*const DescriptorProto, Box<dyn MessagePrinter>>,
 }
 
+pub struct UnknownFieldSets {}
 
-pub struct UnknownFieldSets {
+pub trait FieldValuePrinter {}
 
-}
-
-pub trait FieldValuePrinter {
-}
-
-impl FieldValuePrinter for () {
-}
+impl FieldValuePrinter for () {}
 
 trait FastFieldValuePrinter {
     fn print_bool(val: bool, generator: &mut dyn BaseTextGenerator);
 }
-
 
 pub struct FieldValuePrinterUtf8Escaping;
 
@@ -153,25 +153,27 @@ impl FieldValuePrinterUtf8Escaping {
         Self
     }
 
-    fn print_string(&self, val: &str, generator: &mut dyn BaseTextGenerator) {
-
-    }
+    fn print_string(&self, val: &str, generator: &mut dyn BaseTextGenerator) {}
 }
 
-impl FieldValuePrinter for FieldValuePrinterUtf8Escaping {
-}
+impl FieldValuePrinter for FieldValuePrinterUtf8Escaping {}
 
 pub struct DebugStringFieldValuePrinter;
 
-impl FieldValuePrinter for DebugStringFieldValuePrinter {
-}
+impl FieldValuePrinter for DebugStringFieldValuePrinter {}
 
 impl DebugStringFieldValuePrinter {
     fn new() -> Self {
         Self
     }
 
-    fn print_message_start(_: &DynamicMessage, _: usize, _: usize, single_line_mode: bool, generator: &mut dyn BaseTextGenerator) {
+    fn print_message_start(
+        _: &DynamicMessage,
+        _: usize,
+        _: usize,
+        single_line_mode: bool,
+        generator: &mut dyn BaseTextGenerator,
+    ) {
         // let generator = generator.downcast_mut::<TextGenerator<W>>().unwrap();
         // if single_line_mode {
         //     generator.print_maybe_with_marker(" ", "{ ");
@@ -182,15 +184,18 @@ impl DebugStringFieldValuePrinter {
     }
 }
 
-
 trait MessagePrinter {
-    fn print(&self, message: &DynamicMessage, single_line_mode: bool, generator: &mut dyn BaseTextGenerator) {
+    fn print(
+        &self,
+        message: &DynamicMessage,
+        single_line_mode: bool,
+        generator: &mut dyn BaseTextGenerator,
+    ) {
         todo!()
     }
 }
 
-impl Default for Printer
-{
+impl Default for Printer {
     fn default() -> Self {
         let mut this = Self {
             initial_indent_level: 0,
@@ -209,24 +214,19 @@ impl Default for Printer
         };
 
         this.set_use_utf8_string_escape(false);
-        
+
         this
     }
 }
 
-impl Printer
-{
+impl Printer {
     pub fn new() -> Self {
         todo!()
     }
 
-    pub fn print<W: Write>(&self, message: &DynamicMessage, output: W) -> Result<()>
-    {
-        let mut generator = TextGenerator::new(
-            output,
-            self.insert_silent_marker,
-            self.initial_indent_level,
-        );
+    pub fn print<W: Write>(&self, message: &DynamicMessage, output: W) -> Result<()> {
+        let mut generator =
+            TextGenerator::new(output, self.insert_silent_marker, self.initial_indent_level);
 
         self.print_inner(message, &mut generator);
 
@@ -242,15 +242,29 @@ impl Printer
         Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 
-    pub fn print_unknown_fields(&self, unknown_fields: &UnknownFieldSets, output: Box<dyn Write>) -> Result<()> {
+    pub fn print_unknown_fields(
+        &self,
+        unknown_fields: &UnknownFieldSets,
+        output: Box<dyn Write>,
+    ) -> Result<()> {
         todo!()
     }
 
-    pub fn print_unknown_fields_to_string(&self, unknonw_fields: &UnknownFieldSets, output: &mut String) -> Result<()> {
+    pub fn print_unknown_fields_to_string(
+        &self,
+        unknonw_fields: &UnknownFieldSets,
+        output: &mut String,
+    ) -> Result<()> {
         todo!()
     }
 
-    pub fn print_field_value_to_string(&self, message: &DynamicMessage, field: &FieldDescriptor, index: usize, output: &mut String) -> Result<()> {
+    pub fn print_field_value_to_string(
+        &self,
+        message: &DynamicMessage,
+        field: &FieldDescriptor,
+        index: usize,
+        output: &mut String,
+    ) -> Result<()> {
         todo!()
     }
 
@@ -290,7 +304,10 @@ impl Printer
         self.hide_unknown_fields = hide;
     }
 
-    pub fn set_print_message_fields_in_index_order(&mut self, print_message_fields_in_index_order: bool) {
+    pub fn set_print_message_fields_in_index_order(
+        &mut self,
+        print_message_fields_in_index_order: bool,
+    ) {
         self.print_message_fields_in_index_order = print_message_fields_in_index_order;
     }
 
@@ -302,26 +319,43 @@ impl Printer
         self.finder = finder;
     }
 
-    pub fn set_truncate_string_field_longer_than(&mut self, truncate_string_field_longer_than: u64) {
+    pub fn set_truncate_string_field_longer_than(
+        &mut self,
+        truncate_string_field_longer_than: u64,
+    ) {
         self.truncate_string_field_longer_than = truncate_string_field_longer_than;
     }
 
-    pub fn regeister_field_value_printer(&mut self, field: FieldDescriptor, printer: Box<dyn FieldValuePrinter>) -> bool {
+    pub fn regeister_field_value_printer(
+        &mut self,
+        field: FieldDescriptor,
+        printer: Box<dyn FieldValuePrinter>,
+    ) -> bool {
         todo!()
     }
 
-    pub fn register_message_printer(&mut self, desriptor: MessageDescriptor, printer: Box<dyn MessagePrinter>) -> bool {
+    pub fn register_message_printer(
+        &mut self,
+        desriptor: MessageDescriptor,
+        printer: Box<dyn MessagePrinter>,
+    ) -> bool {
         todo!()
     }
 
     fn print_inner<W: Write>(&self, message: &DynamicMessage, generator: &mut TextGenerator<W>) {
         let descriptor = message.descriptor();
-        if let Some(printer) = self.custom_message_printers.get(&(descriptor.descriptor_proto() as *const _)) {
+        if let Some(printer) = self
+            .custom_message_printers
+            .get(&(descriptor.descriptor_proto() as *const _))
+        {
             printer.print(message, self.single_line_mode, generator);
             return;
         }
 
-        if descriptor.full_name() == prost_types::Any::default().descriptor().full_name() && self.expand_any && self.print_any(message, generator) {
+        if descriptor.full_name() == prost_types::Any::default().descriptor().full_name()
+            && self.expand_any
+            && self.print_any(message, generator)
+        {
             return;
         }
 
@@ -331,7 +365,6 @@ impl Printer
             fields.push(descriptor.get_field(1).unwrap());
         } else {
             for field in descriptor.fields() {
-                
                 if field.is_list() {
                     if message.has_field(&field) {
                         fields.push(field)
@@ -344,26 +377,53 @@ impl Printer
                 }
             }
         }
-
     }
 
-    fn print_field(&self, message: &DynamicMessage, field: &FieldDescriptor, generator: &mut dyn BaseTextGenerator) {
+    fn print_field(
+        &self,
+        message: &DynamicMessage,
+        field: &FieldDescriptor,
+        generator: &mut dyn BaseTextGenerator,
+    ) {
         todo!()
     }
 
-    fn print_short_releated_field(&self, message: &DynamicMessage, field: &FieldDescriptor, generator: &mut dyn BaseTextGenerator) {
+    fn print_short_releated_field(
+        &self,
+        message: &DynamicMessage,
+        field: &FieldDescriptor,
+        generator: &mut dyn BaseTextGenerator,
+    ) {
         todo!()
     }
 
-    fn print_field_name(&self, message: &DynamicMessage, field_index: usize, field_count: usize, field: &FieldDescriptor, generator: &mut dyn BaseTextGenerator) {
+    fn print_field_name(
+        &self,
+        message: &DynamicMessage,
+        field_index: usize,
+        field_count: usize,
+        field: &FieldDescriptor,
+        generator: &mut dyn BaseTextGenerator,
+    ) {
         todo!()
     }
 
-    fn print_field_value(&self, message: &DynamicMessage, field: &FieldDescriptor, index: usize, generator: &mut dyn BaseTextGenerator) {
+    fn print_field_value(
+        &self,
+        message: &DynamicMessage,
+        field: &FieldDescriptor,
+        index: usize,
+        generator: &mut dyn BaseTextGenerator,
+    ) {
         todo!()
     }
 
-    fn print_unknown_fields_inner(&self, unknown_fields: &UnknownFieldSets, generator: &mut dyn BaseTextGenerator, recursion_budget: usize) {
+    fn print_unknown_fields_inner(
+        &self,
+        unknown_fields: &UnknownFieldSets,
+        generator: &mut dyn BaseTextGenerator,
+        recursion_budget: usize,
+    ) {
         todo!()
     }
 
@@ -372,7 +432,8 @@ impl Printer
     }
 
     fn get_field_printer(&self, field: &FieldDescriptor) -> &dyn FieldValuePrinter {
-        self.custorm_printers.get(&(field.field_descriptor_proto() as *const _))
+        self.custorm_printers
+            .get(&(field.field_descriptor_proto() as *const _))
             .unwrap_or(&self.default_field_value_printer)
             .as_ref()
     }
@@ -386,19 +447,20 @@ pub fn print_to_string(message: &DynamicMessage) -> Result<String> {
     Printer::default().print_to_string(message)
 }
 
-
 #[cfg(test)]
 mod tests {
     use prost_reflect::ReflectMessage;
 
     use super::*;
-    use crate::test_util::{*, protobuf_unittest::TestAllTypes};
+    use crate::test_util::{protobuf_unittest::TestAllTypes, *};
 
     #[test]
     fn test_basic() {
         let proto = TestAllTypes::default().transcode_to_dynamic();
 
-        let expected = std::fs::read_to_string("tests/text_format_unittest_data_oneof_implemented.txt").unwrap();
+        let expected =
+            std::fs::read_to_string("tests/text_format_unittest_data_oneof_implemented.txt")
+                .unwrap();
         let actual = print_to_string(&proto).unwrap();
     }
 }

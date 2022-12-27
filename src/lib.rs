@@ -68,10 +68,10 @@
 //! ```
 //!
 
-pub mod parser;
-mod tokenizer;
-pub mod printer;
 pub mod finder;
+pub mod parser;
+pub mod printer;
+mod tokenizer;
 
 #[cfg(test)]
 mod test_util;

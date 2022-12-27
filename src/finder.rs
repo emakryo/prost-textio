@@ -1,5 +1,6 @@
-use prost_reflect::{FileDescriptor, MessageDescriptor, ExtensionDescriptor, DynamicMessage, ReflectMessage};
-
+use prost_reflect::{
+    DynamicMessage, ExtensionDescriptor, FileDescriptor, MessageDescriptor, ReflectMessage,
+};
 
 #[derive(Clone, Default)]
 pub struct Finder {
@@ -17,7 +18,11 @@ impl Finder {
         }
     }
 
-    pub fn find_extension(&self, message: &DynamicMessage, name: &str) -> Option<ExtensionDescriptor> {
+    pub fn find_extension(
+        &self,
+        message: &DynamicMessage,
+        name: &str,
+    ) -> Option<ExtensionDescriptor> {
         let descriptor = message.descriptor();
         let ret = descriptor.extensions().find(|e| e.full_name() == name);
 
