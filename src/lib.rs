@@ -68,16 +68,16 @@
 //! ```
 //!
 
-mod parser;
+pub mod parser;
 mod tokenizer;
+pub mod printer;
+pub mod finder;
 
 #[cfg(test)]
 mod test_util;
 
 #[cfg(test)]
 use test_util::FILE_DESCRIPTOR;
-
-pub use parser::{parse, parse_from_str, Parser};
 
 use thiserror::Error as ThisError;
 
@@ -95,7 +95,7 @@ pub enum Error {
     #[error("Error during tokenization")]
     Tokenize { err: TokenizeError },
     #[error("Unhandled error")]
-    Todo(String),
+    Todo(#[from] anyhow::Error),
 }
 
 /// Error in tokenization.
